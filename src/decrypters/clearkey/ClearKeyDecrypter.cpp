@@ -40,9 +40,11 @@ Adaptive_CencSingleSampleDecrypter* CClearKeyDecrypter::CreateSingleSampleDecryp
     bool skipSessionMessage,
     CryptoMode cryptoMode)
 {
-  if (cryptoMode != CryptoMode::AES_CTR)
+  if (cryptoMode != CryptoMode::AES_CTR && cryptoMode != CryptoMode::AES_CBC &&
+      cryptoMode != CryptoMode::NONE)
   {
-    LOG::LogF(LOGERROR, "Cannot initialize ClearKey DRM. Only \"cenc\" encryption supported.");
+    LOG::LogF(LOGERROR, "Cannot initialize ClearKey DRM, unsupported crypto mode (%i)",
+              static_cast<int>(cryptoMode));
     return nullptr;
   }
 

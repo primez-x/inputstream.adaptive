@@ -8,8 +8,12 @@
 
 #include "common/AdaptiveCencSampleDecrypter.h"
 #include "decrypters/IDecrypter.h"
+#include "utils/CryptoUtils.h"
 
+#include <cstdint>
 #include <map>
+#include <memory>
+#include <vector>
 
 class CClearKeyDecrypter;
 
@@ -25,35 +29,51 @@ public:
                                      const std::map<std::string, std::string>& keys,
                                      CClearKeyDecrypter* host);
   virtual ~CClearKeyCencSingleSampleDecrypter(){};
-  void AddSessionKey(const std::vector<uint8_t>& keyId);
+
   bool HasKeyId(const std::vector<uint8_t>& keyid);
-  virtual AP4_Result SetFragmentInfo(AP4_UI32 pool_id,
-                                     const std::vector<uint8_t>& key,
-                                     const AP4_UI08 nal_length_size,
-                                     AP4_DataBuffer& annexb_sps_pps,
+  virtual AP4_UI32 AddPool() override;
+  virtual void RemovePool(AP4_UI32 poolId) override;
+  virtual AP4_Result SetFragmentInfo(AP4_UI32 poolId,
+                                     const std::vector<uint8_t>& keyId,
+                                     const AP4_UI08 nalLengthSize,
+                                     AP4_DataBuffer& annexbSpsPps,
                                      AP4_UI32 flags,
-                                     CryptoInfo cryptoInfo) override
-  {
-    return AP4_SUCCESS;
-  }
-  virtual AP4_Result DecryptSampleData(AP4_UI32 pool_id,
-                                       AP4_DataBuffer& data_in,
-                                       AP4_DataBuffer& data_out,
+                                     CryptoInfo cryptoInfo) override;
+  virtual AP4_Result DecryptSampleData(AP4_UI32 poolId,
+                                       AP4_DataBuffer& dataIn,
+                                       AP4_DataBuffer& dataOut,
                                        const AP4_UI08* iv,
-                                       unsigned int subsample_count,
-                                       const AP4_UI16* bytes_of_cleartext_data,
-                                       const AP4_UI32* bytes_of_encrypted_data) override;
-  std::string CreateLicenseRequest(const std::vector<uint8_t>& defaultKeyId);
-  bool ParseLicenseResponse(std::string data);
+                                       unsigned int subsampleCount,
+                                       const AP4_UI16* bytesOfCleartextData,
+                                       const AP4_UI32* bytesOfEncryptedData) override;
   void SetDefaultKeyId(const std::vector<uint8_t>& keyId) override{};
   void AddKeyId(const std::vector<uint8_t>& keyId) override{};
-  bool HasKeys() { return !m_keyIds.empty(); }
+  bool HasKeys() { return !m_kidPairs.empty(); }
 
 private:
-  AP4_CencSingleSampleDecrypter* m_singleSampleDecrypter{nullptr};
-  std::string m_strSession;
-  std::string m_licenceDefaultKeyId;
-  std::vector<std::vector<uint8_t>> m_keyIds;
-  std::map<std::string, std::string> m_keyPairs;
+  std::string CreateLicenseRequest(const std::vector<uint8_t>& defaultKeyId);
+  bool ParseLicenseResponse(std::string data);
+
   CClearKeyDecrypter* m_host;
+
+  // KID (raw bytes) -> KEY (raw bytes)
+  std::map<std::vector<uint8_t>, std::vector<uint8_t>> m_kidPairs;
+
+  // Per-fragment cached state
+  struct FINFO
+  {
+    std::vector<uint8_t> kid;
+    CryptoInfo cryptoInfo;
+  };
+
+  // Per-pool decrypter + last-seen fragment info
+  struct PINFO
+  {
+    FINFO fInfo;
+    bool isChanged{false};
+    std::unique_ptr<AP4_CencSingleSampleDecrypter> decrypter;
+  };
+
+  std::map<AP4_UI32, PINFO> m_pool;
+  AP4_UI32 m_nextPoolId{0};
 };

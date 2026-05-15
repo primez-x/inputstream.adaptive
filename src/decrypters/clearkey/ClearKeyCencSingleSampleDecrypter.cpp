@@ -18,6 +18,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <utility>
 
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
@@ -94,22 +95,14 @@ CClearKeyCencSingleSampleDecrypter::CClearKeyCencSingleSampleDecrypter(
     return;
   }
 
-  const std::string b64DefaultKeyId = BASE64::Encode(defaultKeyId);
-  if (!STRING::KeyExists(m_keyPairs, b64DefaultKeyId))
+  if (!STRING::KeyExists(m_kidPairs, defaultKeyId))
   {
     LOG::LogF(LOGERROR, "Key not found on license server response");
+    m_kidPairs.clear();
     return;
   }
 
-  const std::vector<uint8_t> keyBytes = BASE64::Decode(m_keyPairs[b64DefaultKeyId]);
-  if (AP4_FAILED(AP4_CencSingleSampleDecrypter::Create(AP4_CENC_CIPHER_AES_128_CTR, keyBytes.data(),
-                                                       static_cast<AP4_Size>(keyBytes.size()), 0, 0,
-                                                       nullptr, false, m_singleSampleDecrypter)))
-  {
-    LOG::LogF(LOGERROR, "Failed to create AP4_CencSingleSampleDecrypter");
-  }
   SetParentIsOwner(false);
-  AddSessionKey(defaultKeyId);
 }
 
 CClearKeyCencSingleSampleDecrypter::CClearKeyCencSingleSampleDecrypter(
@@ -121,62 +114,153 @@ CClearKeyCencSingleSampleDecrypter::CClearKeyCencSingleSampleDecrypter(
 {
   std::vector<uint8_t> hexKey;
 
-  if (keys.empty()) // Assume key is provided from the manifest
+  if (keys.empty()) // Assume key is provided from the manifest / HLS EXT-X-KEY URI
   {
     hexKey = initData;
   }
-  else // Key provided in Kodi props
+  else // Key provided via Kodi drm_legacy / DRM config props
   {
     const std::string hexDefKid = STRING::ToHexadecimal(defaultKeyId);
 
     if (STRING::KeyExists(keys, hexDefKid))
       STRING::ToHexBytes(keys.at(hexDefKid), hexKey);
     else
-      LOG::LogF(LOGERROR, "Missing KeyId \"%s\" on DRM configuration", defaultKeyId.data());
+      LOG::LogF(LOGERROR, "Missing KeyId \"%s\" on DRM configuration", hexDefKid.c_str());
   }
 
-  AP4_CencSingleSampleDecrypter::Create(AP4_CENC_CIPHER_AES_128_CTR, hexKey.data(),
-                                        static_cast<AP4_Size>(hexKey.size()), 0, 0, nullptr, false,
-                                        m_singleSampleDecrypter);
-  SetParentIsOwner(false);
-  AddSessionKey(defaultKeyId);
-}
+  if (!hexKey.empty())
+    m_kidPairs.emplace(defaultKeyId, std::move(hexKey));
 
-void CClearKeyCencSingleSampleDecrypter::AddSessionKey(const std::vector<uint8_t>& keyId)
-{
-  if (std::find(m_keyIds.begin(), m_keyIds.end(), keyId) == m_keyIds.end())
-    m_keyIds.emplace_back(keyId);
+  SetParentIsOwner(false);
 }
 
 bool CClearKeyCencSingleSampleDecrypter::HasKeyId(const std::vector<uint8_t>& keyid)
 {
-  if (!keyid.empty())
+  return !keyid.empty() && STRING::KeyExists(m_kidPairs, keyid);
+}
+
+AP4_UI32 CClearKeyCencSingleSampleDecrypter::AddPool()
+{
+  const AP4_UI32 poolId = m_nextPoolId++;
+  m_pool.emplace(poolId, PINFO());
+  return poolId;
+}
+
+void CClearKeyCencSingleSampleDecrypter::RemovePool(AP4_UI32 poolId)
+{
+  m_pool.erase(poolId);
+}
+
+AP4_Result CClearKeyCencSingleSampleDecrypter::SetFragmentInfo(AP4_UI32 poolId,
+                                                               const std::vector<uint8_t>& keyId,
+                                                               const AP4_UI08 nalLengthSize,
+                                                               AP4_DataBuffer& annexbSpsPps,
+                                                               AP4_UI32 flags,
+                                                               CryptoInfo cryptoInfo)
+{
+  if (!STRING::KeyExists(m_pool, poolId))
   {
-    for (const std::vector<uint8_t>& key : m_keyIds)
-    {
-      if (key == keyid)
-        return true;
-    }
+    LOG::LogF(LOGERROR, "Cannot set fragment info, pool id %u does not exist", poolId);
+    return AP4_ERROR_INVALID_PARAMETERS;
   }
-  return false;
+
+  if (cryptoInfo.m_mode != CryptoMode::NONE && cryptoInfo.m_mode != CryptoMode::AES_CTR &&
+      cryptoInfo.m_mode != CryptoMode::AES_CBC)
+  {
+    LOG::LogF(LOGERROR, "Cannot set fragment info, unsupported crypto mode (%i)",
+              static_cast<int>(cryptoInfo.m_mode));
+    return AP4_ERROR_INVALID_PARAMETERS;
+  }
+
+  PINFO& pInfo = m_pool[poolId];
+  FINFO& fInfo = pInfo.fInfo;
+
+  // If any encryption parameter changed since the previous fragment, the
+  // underlying AP4 decrypter will have to be re-created on the next sample.
+  pInfo.isChanged = fInfo.kid != keyId || fInfo.cryptoInfo.m_mode != cryptoInfo.m_mode ||
+                    fInfo.cryptoInfo.m_cryptBlocks != cryptoInfo.m_cryptBlocks ||
+                    fInfo.cryptoInfo.m_skipBlocks != cryptoInfo.m_skipBlocks;
+
+  fInfo.kid = keyId;
+  fInfo.cryptoInfo = cryptoInfo;
+
+  return AP4_SUCCESS;
 }
 
 AP4_Result CClearKeyCencSingleSampleDecrypter::DecryptSampleData(
-    AP4_UI32 pool_id,
-    AP4_DataBuffer& data_in,
-    AP4_DataBuffer& data_out,
+    AP4_UI32 poolId,
+    AP4_DataBuffer& dataIn,
+    AP4_DataBuffer& dataOut,
     const AP4_UI08* iv,
-    unsigned int subsample_count,
-    const AP4_UI16* bytes_of_cleartext_data,
-    const AP4_UI32* bytes_of_encrypted_data)
+    unsigned int subsampleCount,
+    const AP4_UI16* bytesOfCleartextData,
+    const AP4_UI32* bytesOfEncryptedData)
 {
-  if (!m_singleSampleDecrypter)
+  if (m_pool.empty())
   {
-    return AP4_FAILURE;
+    LOG::LogF(LOGERROR, "Cannot decrypt data, the pool is empty");
+    return AP4_ERROR_INTERNAL;
   }
-  return (m_singleSampleDecrypter)
-      ->DecryptSampleData(data_in, data_out, iv, subsample_count, bytes_of_cleartext_data,
-                          bytes_of_encrypted_data);
+  if (!STRING::KeyExists(m_pool, poolId))
+  {
+    LOG::LogF(LOGERROR, "Cannot decrypt data, pool id %u does not exist", poolId);
+    return AP4_ERROR_INVALID_PARAMETERS;
+  }
+
+  PINFO& pInfo = m_pool[poolId];
+  auto& decrypter = pInfo.decrypter;
+
+  if (!decrypter || pInfo.isChanged)
+  {
+    const auto& fInfo = pInfo.fInfo;
+
+    // Empty kid: most HLS ClearKey streams identify the key only by URI (no KID
+    // declared on EXT-X-KEY). In that case use the single key we have.
+    std::vector<uint8_t> lookupKid = fInfo.kid;
+    if (lookupKid.empty() && m_kidPairs.size() == 1)
+      lookupKid = m_kidPairs.begin()->first;
+
+    if (!STRING::KeyExists(m_kidPairs, lookupKid))
+    {
+      LOG::LogF(LOGERROR, "Cannot decrypt data, missing KID/KEY from the license data");
+      return AP4_ERROR_INVALID_STATE;
+    }
+
+    const std::vector<uint8_t>& key = m_kidPairs[lookupKid];
+
+    AP4_UI32 cypherType{AP4_CENC_CIPHER_NONE};
+    bool resetIvEachSubsample{false};
+
+    if (fInfo.cryptoInfo.m_mode == CryptoMode::AES_CBC)
+    {
+      cypherType = AP4_CENC_CIPHER_AES_128_CBC;
+      // CBCS resets the IV at each subsample.
+      // See https://github.com/axiomatic-systems/Bento4/commit/ab07e3acc7befc821554bc5e271df1201681e954
+      resetIvEachSubsample = true;
+    }
+    else
+    {
+      // CryptoMode::AES_CTR (and NONE — DASH path that never sets a mode falls here
+      // and matches the pre-CBCS Omega behavior).
+      cypherType = AP4_CENC_CIPHER_AES_128_CTR;
+    }
+
+    AP4_CencSingleSampleDecrypter* pDecrypter{nullptr};
+    if (AP4_FAILED(AP4_CencSingleSampleDecrypter::Create(
+            cypherType, key.data(), static_cast<AP4_Size>(key.size()),
+            fInfo.cryptoInfo.m_cryptBlocks, fInfo.cryptoInfo.m_skipBlocks, nullptr,
+            resetIvEachSubsample, pDecrypter)))
+    {
+      LOG::LogF(LOGERROR, "Failed to create AP4_CencSingleSampleDecrypter");
+      return AP4_ERROR_INTERNAL;
+    }
+
+    decrypter.reset(pDecrypter);
+    pInfo.isChanged = false;
+  }
+
+  return decrypter->DecryptSampleData(dataIn, dataOut, iv, subsampleCount, bytesOfCleartextData,
+                                      bytesOfEncryptedData);
 }
 
 std::string CClearKeyCencSingleSampleDecrypter::CreateLicenseRequest(
@@ -234,52 +318,59 @@ bool CClearKeyCencSingleSampleDecrypter::ParseLicenseResponse(std::string data)
     return false;
   }
 
-  for (auto& jChildObj : jDoc.GetObject())
+  if (jDoc.HasMember("Message") && jDoc["Message"].IsString())
   {
+    LOG::LogF(LOGERROR, "Error in license response: %s", jDoc["Message"].GetString());
+    return false;
+  }
+
+  if (!jDoc.HasMember("keys") || !jDoc["keys"].IsArray())
+  {
+    LOG::LogF(LOGERROR, "No keys in license response");
+    return false;
+  }
+
+  for (auto const& jArrayKey : jDoc["keys"].GetArray())
+  {
+    if (!jArrayKey.IsObject())
+      continue;
+
+    if (jArrayKey.HasMember("kty") && jArrayKey["kty"].IsString() &&
+        std::string{jArrayKey["kty"].GetString()} != "oct")
+    {
+      LOG::LogF(LOGWARNING, "Ignored JWK set, due to unsupported \"%s\" key type",
+                jArrayKey["kty"].GetString());
+      continue;
+    }
+
     std::string b64Key;
     std::string b64KeyId;
-    const std::string keyName = jChildObj.name.GetString();
-    rapidjson::Value& jDictVal = jChildObj.value;
 
-    if (keyName == "Message" && jDictVal.IsString())
+    if (jArrayKey.HasMember("k") && jArrayKey["k"].IsString())
+      b64Key = jArrayKey["k"].GetString();
+
+    if (jArrayKey.HasMember("kid") && jArrayKey["kid"].IsString())
+      b64KeyId = jArrayKey["kid"].GetString();
+
+    if (b64Key.empty() || b64KeyId.empty())
+      continue;
+
+    CkB64Decode(b64Key);
+    BASE64::AddPadding(b64Key);
+    CkB64Decode(b64KeyId);
+    BASE64::AddPadding(b64KeyId);
+
+    const std::vector<uint8_t> kidBytes = BASE64::Decode(b64KeyId);
+    const std::vector<uint8_t> keyBytes = BASE64::Decode(b64Key);
+
+    if (kidBytes.empty() || keyBytes.empty())
     {
-      LOG::LogF(LOGERROR, "Error in license response: %s", jDictVal.GetString());
-      return false;
+      LOG::LogF(LOGERROR, "Malformed key pair value in license response");
+      continue;
     }
 
-    if (!jDoc.HasMember("keys"))
-    {
-      LOG::LogF(LOGERROR, "No keys in license response");
-      return false;
-    }
-
-    if (keyName == "keys" && jDictVal.IsArray())
-    {
-      // NOTE: for now we assume that one key only is requested and one only will come in the license response
-      for (auto const& jArrayKey : jDictVal.GetArray())
-      {
-        if (jArrayKey.IsObject())
-        {
-          if (jArrayKey.HasMember("k") && jArrayKey["k"].IsString())
-            b64Key = jArrayKey["k"].GetString();
-
-          if (jArrayKey.HasMember("kid") && jArrayKey["kid"].IsString())
-            b64KeyId = jArrayKey["kid"].GetString();
-        }
-
-        if (!b64Key.empty() && !b64KeyId.empty())
-        {
-          CkB64Decode(b64Key);
-          BASE64::AddPadding(b64Key);
-
-          CkB64Decode(b64KeyId);
-          BASE64::AddPadding(b64KeyId);
-
-          m_keyPairs.emplace(b64KeyId, b64Key);
-          break;
-        }
-      }
-    }
+    m_kidPairs.insert_or_assign(kidBytes, keyBytes);
   }
-  return true;
+
+  return !m_kidPairs.empty();
 }
