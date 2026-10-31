@@ -174,3 +174,66 @@ TEST_F(ADTSSampleReaderTest, SeekWithoutTimestampEnds)
   EXPECT_EQ(m_reader->PTS(), FrameTime(0, 50, 1024, 44100));
   EXPECT_FALSE(m_reader->TimeSeek(AacTime(0), false));
 }
+
+namespace
+{
+std::vector<uint8_t> Frames(std::vector<uint8_t> header, size_t frameSize, int count)
+{
+  std::vector<uint8_t> data;
+  AppendID3Timestamp(data, BASE_PTS);
+  header.resize(frameSize, 0);
+  for (int i = 0; i < count; ++i)
+    data.insert(data.end(), header.begin(), header.end());
+  return data;
+}
+
+// AC-3, 48 kHz, 192 kb/s (768 byte frames), bsid 8; acmod 2 is stereo, 7 is 3/2
+std::vector<uint8_t> Ac3Frames(uint8_t acmodByte)
+{
+  return Frames({0x0B, 0x77, 0, 0, 0x14, 0x40, acmodByte}, 768, FRAMES);
+}
+
+// E-AC-3, 48 kHz, 256 byte frames, stereo, bsid 16
+std::vector<uint8_t> Eac3Frames(uint8_t numblkscod)
+{
+  return Frames({0x0B, 0x77, 0x00, 0x7F, static_cast<uint8_t>((numblkscod << 4) | 0x04), 0x80},
+                256, FRAMES);
+}
+} // namespace
+
+// An AC-3 frame always holds 6 blocks of 256 samples, for any channel count.
+TEST_F(ADTSSampleReaderTest, Ac3StereoFramesHold1536Samples)
+{
+  OpenSegment(Ac3Frames(0x40), AacTime(0));
+
+  ASSERT_TRUE(m_reader->TimeSeek(FrameTime(BASE_PTS, 100, 1536, 48000), false));
+  EXPECT_EQ(m_reader->PTS(), FrameTime(BASE_PTS, 100, 1536, 48000));
+}
+
+TEST_F(ADTSSampleReaderTest, Ac3SurroundFramesHold1536Samples)
+{
+  OpenSegment(Ac3Frames(0xE0), AacTime(0));
+
+  ASSERT_TRUE(m_reader->TimeSeek(FrameTime(BASE_PTS, 100, 1536, 48000), false));
+  EXPECT_EQ(m_reader->PTS(), FrameTime(BASE_PTS, 100, 1536, 48000));
+}
+
+// An E-AC-3 frame holds 1, 2, 3 or 6 blocks of 256 samples (numblkscod).
+TEST_F(ADTSSampleReaderTest, Eac3FramesHoldTheirBlockCount)
+{
+  const struct
+  {
+    uint8_t numblkscod;
+    uint64_t samples;
+  } cases[] = {{0, 256}, {1, 512}, {2, 768}, {3, 1536}};
+  for (const auto& c : cases)
+  {
+    SCOPED_TRACE(static_cast<int>(c.numblkscod));
+    OpenSegment(Eac3Frames(c.numblkscod), AacTime(0));
+
+    ASSERT_TRUE(m_reader->TimeSeek(FrameTime(BASE_PTS, 100, c.samples, 48000), false));
+    EXPECT_EQ(m_reader->PTS(), FrameTime(BASE_PTS, 100, c.samples, 48000));
+    TearDown();
+    m_stream = nullptr;
+  }
+}

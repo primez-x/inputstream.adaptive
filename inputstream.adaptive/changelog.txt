@@ -1,5 +1,6 @@
 v21.5.25-p3i.2 (2026-10-30)
 - Fix HLS audio starting before video after a seek, which froze the picture on Amlogic
+- Fix the timestamps of stereo AC-3 and of E-AC-3 frames with fewer than 6 blocks in HLS audio
 
 v21.5.25-p3i.1 (2026-10-10)
 - Update to upstream Omega 21.5.25

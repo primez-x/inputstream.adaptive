@@ -249,7 +249,8 @@ bool ADTSFrame::ParseAc3Header(AP4_ByteStream* stream, ADTSFrameInfo& frameInfo)
     return false;
 
   frameInfo.m_frameSize = frame.m_Info.m_FrameSize;
-  frameInfo.m_frameCount = 256u * frame.m_Info.m_ChannelCount;
+  // An AC-3 frame holds 6 audio blocks of 256 samples
+  frameInfo.m_frameCount = 1536;
   frameInfo.m_sampleRate = frame.m_Info.m_SampleRate;
   frameInfo.m_channels = frame.m_Info.m_ChannelCount;
   return true;
@@ -293,7 +294,9 @@ bool ADTSFrame::ParseEc3Header(AP4_ByteStream* stream, ADTSFrameInfo& frameInfo)
     return false;
 
   frameInfo.m_frameSize = frame.m_Info.m_FrameSize;
-  frameInfo.m_frameCount = 256u * frame.m_Info.m_ChannelCount;
+  // numblkscod: 1, 2, 3 or 6 audio blocks of 256 samples (Check() rejects fscod 3)
+  const unsigned int numblkscod{(buffer.GetData()[4] >> 4) & 0x3u};
+  frameInfo.m_frameCount = 256u * (numblkscod == 3 ? 6 : numblkscod + 1);
   frameInfo.m_sampleRate = frame.m_Info.m_SampleRate;
   if (frame.m_Info.complexity_index_type_a > 0)
   {
