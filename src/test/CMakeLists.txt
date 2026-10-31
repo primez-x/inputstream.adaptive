@@ -64,13 +64,17 @@ add_executable(${DEMUXER_BINARY}
     TestAdaptiveStream.cpp
     TestADTSReader.cpp
     TestTSReader.cpp
+    TestWebmReader.cpp
     ../demuxers/ADTSReader.cpp
     ../demuxers/TSReader.cpp
+    ../demuxers/WebmReader.cpp
     ../parser/CodecParser.cpp
     ../samplereader/ADTSSampleReader.cpp
     ../samplereader/TSSampleReader.cpp
+    ../samplereader/WebmSampleReader.cpp
+    ../utils/StringUtils.cpp
     )
 
-target_link_libraries(${DEMUXER_BINARY} PRIVATE ${BENTO4_LIBRARIES} mpegts ${GTEST_LIBRARIES} Threads::Threads)
+target_link_libraries(${DEMUXER_BINARY} PRIVATE ${BENTO4_LIBRARIES} mpegts webm_parser ${GTEST_LIBRARIES} Threads::Threads)
 
 add_test(NAME demuxer_tests COMMAND ${DEMUXER_BINARY} "${TEST_DATA_DIR}")

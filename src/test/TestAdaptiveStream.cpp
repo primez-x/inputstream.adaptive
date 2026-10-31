@@ -47,3 +47,12 @@ bool CAdaptiveByteStream::waitingForSegment() const
 {
   return m_adStream->m_waitingForSegment;
 }
+
+void CAdaptiveByteStream::FixateInitialization(bool on)
+{
+  m_adStream->m_fixateInitialization = on;
+}
+
+void CAdaptiveByteStream::SetSegmentFileOffset(uint64_t offset)
+{
+}

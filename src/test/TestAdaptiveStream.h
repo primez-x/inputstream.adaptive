@@ -19,6 +19,7 @@
 // the read, seek and tell rules of AdaptiveStream for downloaded segments: a
 // read never spans two segments, a seek stays in the current segment, a failed
 // seek moves only the segment read position, and tell can switch segments.
+// A fixated initialization segment does not switch.
 // A switch calls the observer with the segment start time, as
 // CSession::OnSegmentChanged sets the PTS offset of the sample reader.
 namespace adaptive
@@ -28,7 +29,8 @@ class AdaptiveStream
 public:
   bool ensureSegment()
   {
-    if (m_segments.size() > 1 && m_segmentReadPos >= m_segments.front().size())
+    if (!m_fixateInitialization && m_segments.size() > 1 &&
+        m_segmentReadPos >= m_segments.front().size())
     {
       m_segments.pop_front();
       m_starts.pop_front();
@@ -74,5 +76,6 @@ public:
   size_t m_segmentReadPos{0};
   uint64_t m_absolutePosition{0};
   bool m_waitingForSegment{false};
+  bool m_fixateInitialization{false}; // Reads stay in the initialization segment
 };
 } // namespace adaptive

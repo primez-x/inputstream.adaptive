@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <optional>
 #include <stdint.h>
 #include <vector>
 
@@ -46,6 +47,16 @@ public:
   bool GetInformation(kodi::addon::InputstreamInfo& info);
   bool ReadPacket();
 
+  /*!
+   * \brief Wait for the PTS of the first frame of a new segment.
+   */
+  void MarkSegmentStart() { m_segmentPts.reset(); }
+  /*!
+   * \brief The PTS of the first frame read after MarkSegmentStart().
+   * \return The PTS, or nothing while the frame is not read yet
+   */
+  std::optional<uint64_t> GetSegmentPts() const { return m_segmentPts; }
+
   webm::Status OnSegmentBegin(const webm::ElementMetadata& metadata, webm::Action* action) override;
 
   webm::Status OnElementBegin(const webm::ElementMetadata& metadata, webm::Action* action) override;
@@ -69,6 +80,7 @@ private:
   bool m_needFrame = false;
   uint64_t m_pts = STREAM_NOPTS_VALUE;
   uint64_t m_ptsOffset = 0;
+  std::optional<uint64_t> m_segmentPts;
   uint64_t m_duration = 0;
   std::vector<CUEPOINT> *m_cuePoints = nullptr;
   AP4_DataBuffer m_frameBuffer, m_codecPrivate;

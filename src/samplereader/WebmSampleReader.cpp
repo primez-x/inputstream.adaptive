@@ -41,9 +41,10 @@ AP4_Result CWebmSampleReader::ReadSample()
     m_dts = GetDts() * 1000;
     m_pts = GetPts() * 1000;
 
-    if (~m_ptsOffs)
+    const std::optional<uint64_t> segmentPts{GetSegmentPts()};
+    if (~m_ptsOffs && segmentPts)
     {
-      m_ptsDiff = m_pts - m_ptsOffs;
+      m_ptsDiff = *segmentPts * 1000 - m_ptsOffs;
       m_ptsOffs = ~0ULL;
     }
     return AP4_SUCCESS;
@@ -51,6 +52,15 @@ AP4_Result CWebmSampleReader::ReadSample()
   if (!m_adByteStream || !m_adByteStream->waitingForSegment())
     m_eos = true;
   return AP4_ERROR_EOS;
+}
+
+void CWebmSampleReader::SetPTSOffset(uint64_t offset)
+{
+  m_ptsOffs = offset;
+  // The parser reads the header of the next block to find the frame duration.
+  // So the segment can change before the last frame of the previous segment
+  // is a sample, and the offset applies to the first frame of the new segment.
+  MarkSegmentStart();
 }
 
 void CWebmSampleReader::Reset(bool bEOS)

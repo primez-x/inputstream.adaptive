@@ -30,7 +30,7 @@ public:
     return WebmReader::GetInformation(info);
   }
   bool TimeSeek(uint64_t pts, bool preceeding) override;
-  void SetPTSOffset(uint64_t offset) override { m_ptsOffs = offset; }
+  void SetPTSOffset(uint64_t offset) override;
   int64_t GetPTSDiff() const override { return m_ptsDiff; }
   uint32_t GetTimeScale() const override { return 1000; }
   AP4_UI32 GetStreamId() const override { return m_streamId; }

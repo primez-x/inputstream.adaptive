@@ -255,6 +255,8 @@ webm::Status WebmReader::OnSimpleBlockBegin(const webm::ElementMetadata& metadat
   }
 
   m_pts = m_ptsOffset + simple_block.timecode;
+  if (!m_segmentPts)
+    m_segmentPts = m_pts;
   *action = webm::Action::kRead;
   return webm::Status(webm::Status::kOkCompleted);
 }
