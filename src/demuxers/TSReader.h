@@ -35,6 +35,17 @@ public:
   bool GetInformation(kodi::addon::InputstreamInfo& info);
   bool ReadPacket(bool streamInfo = false);
 
+  /*!
+   * \brief Wait for the PTS of the first PES of a new segment.
+   */
+  void MarkSegmentStart();
+  /*!
+   * \brief The PTS of the first PES after MarkSegmentStart(), of the video if
+   *        the video is enabled.
+   * \return The PTS, or PTS_UNSET while the PES is not read yet
+   */
+  uint64_t GetSegmentPts() const { return m_segmentPts; }
+
   uint64_t GetDts() const { return m_pkt.dts == PTS_UNSET ? PTS_UNSET : m_pkt.dts; }
   uint64_t GetPts() const { return m_pkt.pts == PTS_UNSET ? PTS_UNSET : m_pkt.pts; }
   uint64_t GetDuration() const { return m_pkt.duration; }
@@ -44,6 +55,8 @@ public:
 
 private:
   bool GetPacket();
+  bool HasVideo() const;
+  void UpdateSegmentPts(const TSDemux::ElementaryStream* stream);
   bool HandleProgramChange();
   bool HandleStreamChange(uint16_t pid);
 
@@ -55,6 +68,8 @@ private:
   AP4_Position m_startPos;
   uint32_t m_requiredMask;
   uint32_t m_typeMask;
+  bool m_segmentPtsPending{false};
+  uint64_t m_segmentPts{PTS_UNSET};
 
   struct TSINFO
   {

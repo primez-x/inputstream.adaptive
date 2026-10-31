@@ -208,15 +208,7 @@ bool TSReader::GetInformation(kodi::addon::InputstreamInfo& info)
 // We assume that m_startpos is the current I-Frame position
 bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
 {
-  bool hasVideo(false);
-  //look if we have video
-  for (auto &tsInfo : m_streamInfos)
-    if (tsInfo.m_enabled && tsInfo.m_streamType == INPUTSTREAM_TYPE_VIDEO)
-    {
-      hasVideo = true;
-      break;
-    }
-
+  const bool hasVideo{HasVideo()};
   uint64_t lastRecovery(static_cast<uint64_t>(m_startPos));
   while (m_pkt.pts == PTS_UNSET || !preceeding || static_cast<uint64_t>(m_pkt.pts) < timeInTs)
   {
@@ -284,7 +276,12 @@ bool TSReader::ReadPacket(bool scanStreamInfo)
 
     if (m_AVContext->HasPIDPayload())
     {
+      const TSDemux::ElementaryStream* stream{m_AVContext->GetPIDStream()};
+      const uint32_t pesPtsCount{stream ? stream->pes_pts_count : 0};
       status = m_AVContext->ProcessTSPayload();
+      // Take the PTS before the parser of the stream advances the PTS frame by frame
+      if (stream && stream->pes_pts_count != pesPtsCount)
+        UpdateSegmentPts(stream);
       if (status == TSDemux::AVCONTEXT_PROGRAM_CHANGE)
       {
         if (HandleProgramChange())
@@ -319,6 +316,40 @@ bool TSReader::GetPacket()
     return es->GetStreamPacket(&m_pkt);
   }
   return false;
+}
+
+bool TSReader::HasVideo() const
+{
+  for (const auto& tsInfo : m_streamInfos)
+  {
+    if (tsInfo.m_enabled && tsInfo.m_streamType == INPUTSTREAM_TYPE_VIDEO)
+      return true;
+  }
+  return false;
+}
+
+void TSReader::MarkSegmentStart()
+{
+  m_segmentPtsPending = true;
+  m_segmentPts = PTS_UNSET;
+}
+
+void TSReader::UpdateSegmentPts(const TSDemux::ElementaryStream* stream)
+{
+  if (!m_segmentPtsPending)
+    return;
+
+  for (const auto& tsInfo : m_streamInfos)
+  {
+    // With video, the audio PES can start before the video PES in some segments
+    if (tsInfo.m_stream == stream && tsInfo.m_enabled &&
+        (tsInfo.m_streamType == INPUTSTREAM_TYPE_VIDEO || !HasVideo()))
+    {
+      m_segmentPts = stream->c_pts;
+      m_segmentPtsPending = false;
+      return;
+    }
+  }
 }
 
 bool TSReader::HandleProgramChange()

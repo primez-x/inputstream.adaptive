@@ -55,18 +55,22 @@ target_link_libraries(${BINARY} PRIVATE ${BENTO4_LIBRARIES} ${PUGIXML_LIBRARIES}
 set(TEST_DATA_DIR "${CMAKE_SOURCE_DIR}/src/test/manifests")
 add_test(NAME manifest_tests COMMAND ${BINARY} "${TEST_DATA_DIR}")
 
-# The ADTS reader uses the Kodi headers instead of the test stubs, so the ADTS
+# The demuxers use the Kodi headers instead of the test stubs, so the demuxer
 # tests build without INPUTSTREAM_TEST_BUILD in a separate executable
-set(ADTS_BINARY ${CMAKE_PROJECT_NAME}_adts_test)
+set(DEMUXER_BINARY ${CMAKE_PROJECT_NAME}_demuxer_test)
 
-add_executable(${ADTS_BINARY}
+add_executable(${DEMUXER_BINARY}
     TestMain.cpp
+    TestAdaptiveStream.cpp
     TestADTSReader.cpp
+    TestTSReader.cpp
     ../demuxers/ADTSReader.cpp
+    ../demuxers/TSReader.cpp
     ../parser/CodecParser.cpp
     ../samplereader/ADTSSampleReader.cpp
+    ../samplereader/TSSampleReader.cpp
     )
 
-target_link_libraries(${ADTS_BINARY} PRIVATE ${BENTO4_LIBRARIES} ${GTEST_LIBRARIES} Threads::Threads)
+target_link_libraries(${DEMUXER_BINARY} PRIVATE ${BENTO4_LIBRARIES} mpegts ${GTEST_LIBRARIES} Threads::Threads)
 
-add_test(NAME adts_tests COMMAND ${ADTS_BINARY} "${TEST_DATA_DIR}")
+add_test(NAME demuxer_tests COMMAND ${DEMUXER_BINARY} "${TEST_DATA_DIR}")

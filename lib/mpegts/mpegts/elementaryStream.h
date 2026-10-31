@@ -94,6 +94,7 @@ namespace TSDemux
     int64_t c_pts;               ///< current MPEG stream PTS (presentation time for audio and video)
     int64_t p_dts;               ///< previous MPEG stream DTS (decode time for video)
     int64_t p_pts;               ///< previous MPEG stream PTS (presentation time for audio and video)
+    uint32_t pes_pts_count;      ///< number of PES headers with a PTS
 
     bool has_stream_info;         ///< true if stream info is completed else it requires parsing of iframe
 

@@ -1144,6 +1144,7 @@ int AVContext::parse_ts_pes()
           this->packet->stream->p_dts = this->packet->stream->c_dts;
           this->packet->stream->p_pts = this->packet->stream->c_pts;
           this->packet->stream->c_dts = this->packet->stream->c_pts = pts;
+          this->packet->stream->pes_pts_count++;
         }
         else
         {
@@ -1176,6 +1177,7 @@ int AVContext::parse_ts_pes()
             this->packet->stream->p_pts = this->packet->stream->c_pts;
             this->packet->stream->c_dts = dts;
             this->packet->stream->c_pts = pts;
+            this->packet->stream->pes_pts_count++;
           }
         }
         else
