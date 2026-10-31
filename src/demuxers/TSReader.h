@@ -136,6 +136,9 @@ private:
   };
   std::deque<FrameCopy> m_frameCopies; // The read after a seek starts with these frames
   std::optional<FrameCopy> m_frameCopy; // The data of the packet, if the packet is a copy
+  // The frames of the last PES of the other streams, while a seek waits for
+  // the next live segment. That segment can continue the PES.
+  std::deque<FrameCopy> m_seekPesFrames;
 
   struct TSINFO
   {

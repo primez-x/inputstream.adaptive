@@ -95,6 +95,7 @@ void TSReader::Reset(bool resetPackets)
   {
     m_seekFrame.reset();
     m_frameCopies.clear();
+    m_seekPesFrames.clear();
   }
 }
 
@@ -236,7 +237,9 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
   // With video, the frames of the last PES of each other stream. The PES can
   // continue in the next segment, and then the frames are copies.
   std::deque<FrameCopy> lastPesFrames;
-  std::deque<FrameCopy> previousPesFrames;
+  // A seek that continues in the next live segment
+  std::deque<FrameCopy> previousPesFrames{std::move(m_seekPesFrames)};
+  m_seekPesFrames.clear();
   m_frameCopies.clear();
   const auto keepCopy = [&](const TSDemux::ElementaryStream::PesStart& pes)
   {
@@ -267,7 +270,12 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
     if (!read)
     {
       if (nextSegment || !IsSegmentEnd(m_AVContext->GetPosition()))
+      {
+        // The seek can continue in the next live segment
+        if (nextSegment)
+          m_seekPesFrames = std::move(previousPesFrames);
         return false;
+      }
       if (preceeding && timeInTs < segmentEnd)
         break;
       // The seek time is after the frames of this segment

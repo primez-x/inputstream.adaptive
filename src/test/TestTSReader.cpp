@@ -1528,7 +1528,8 @@ TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
 
 // The last video and audio PES of a segment can continue in the next segment.
 // After a seek to the key frame of that video PES, the audio of that audio PES
-// follows the key frame, as the stream cannot read the PES again.
+// follows the key frame, as the stream cannot read the PES again. This is also
+// true when the seek waits for the next live segment.
 TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTheSegments)
 {
   constexpr int SPLIT_FRAME{SEGMENT_VIDEO_FRAMES - 1};
@@ -1536,11 +1537,14 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTh
   constexpr int SPLIT_FRAMES{4};
   // The audio of the next segment comes before or after the video of a frame.
   // With the video first, the rest of the audio PES comes after the next video PES.
+  // A live seek waits for the next segment.
+  for (const bool live : {false, true})
   for (const bool audioFirst : {true, false})
   for (const bool preceeding : {true, false})
   {
     SCOPED_TRACE(testing::Message() << (audioFirst ? "audio first" : "video first")
-                                    << (preceeding ? "" : ", not preceeding"));
+                                    << (preceeding ? "" : ", not preceeding")
+                                    << (live ? ", live" : ""));
     TSWriter writer;
     writer.WriteTables(true);
     for (int v = 0; v < SPLIT_FRAME; ++v)
@@ -1582,7 +1586,10 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTh
     second.insert(second.end(), rest.begin(), rest.end());
 
     Open(first, Time(VideoPts(0)) - SegmentDiff(0), INPUTSTREAM_TYPE_VIDEO);
-    AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+    if (live)
+      m_segments->m_waitingForSegment = true;
+    else
+      AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
     m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
     bool started{false};
     ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
@@ -1591,6 +1598,13 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTh
     m_reader->Reset(false);
     ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(SPLIT_FRAME) - (preceeding ? 0 : VIDEO_TICKS / 2)),
                                    preceeding));
+    if (live)
+    {
+      EXPECT_FALSE(m_reader->EOS());
+      AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+      m_segments->m_waitingForSegment = false;
+      ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+    }
     ASSERT_EQ(m_reader->GetStreamId(), VIDEO_ID);
     EXPECT_EQ(m_reader->PTS(), Time(VideoPts(SPLIT_FRAME)));
     EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(0));

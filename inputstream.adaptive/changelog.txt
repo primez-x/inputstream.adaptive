@@ -18,6 +18,7 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix a seek in a TS stream to a key frame whose PES starts in the segment before, which continued at the next key frame and lost the audio of a PES across the two segments
 - Fix reads past the data, crashes and wrong decoder setups from H.264 and HEVC TS streams with corrupt parameter sets, an H.264 SPS longer than 256 bytes, an HEVC parameter set after a 3 byte start code, or an HEVC VPS in another TS packet than the PPS
 - Fix a seek in a TS stream to a key frame whose PES starts at the end of the segment before with no frame data or only the first bytes of the frame, which continued at the next key frame
+- Fix a live seek to a key frame whose PES starts in the segment before, which lost the first audio frame of an audio PES across the two segments while the seek waited for the next segment
 
 v21.5.25-p3i.3 (2026-10-30)
 - Fix a seek in a live HLS stream that ended the audio when the next audio segment was not available yet
