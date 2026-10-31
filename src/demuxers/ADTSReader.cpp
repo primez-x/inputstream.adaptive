@@ -272,6 +272,24 @@ bool ADTSFrame::ParseEc3(AP4_ByteStream* stream)
   if (!AP4_SUCCEEDED(stream->Read(m_dataBuffer.UseData(), m_dataBuffer.GetDataSize())))
     return false;
 
+  // With 7.1 channels a dependent substream (strmtyp 1) follows, and both
+  // substreams are one access unit. Peek only inside the segment: a seek past
+  // the segment end fails, and AdaptiveStream then has no valid seek back.
+  AP4_Position frameEnd;
+  stream->Tell(frameEnd);
+  AP4_UI08 next[4];
+  if (AP4_SUCCEEDED(stream->Seek(frameEnd + sizeof(next))) &&
+      AP4_SUCCEEDED(stream->Seek(frameEnd)) &&
+      AP4_SUCCEEDED(stream->Read(next, sizeof(next))) && AP4_SUCCEEDED(stream->Seek(frameEnd)) &&
+      next[0] == 0x0B && next[1] == 0x77 && next[2] >> 6 == 1)
+  {
+    // frmsiz is the frame size in 16 bit words, minus 1
+    const AP4_Size size{m_dataBuffer.GetDataSize()};
+    m_dataBuffer.SetDataSize(size + ((((next[2] & 0x07) << 8) | next[3]) + 1) * 2);
+    if (!AP4_SUCCEEDED(stream->Read(m_dataBuffer.UseData() + size, m_dataBuffer.GetDataSize() - size)))
+      return false;
+  }
+
   AdjustStreamForPadding(stream);
   return true;
 }

@@ -1,5 +1,6 @@
 v21.5.25-p3i.3 (2026-10-30)
 - Fix a seek in a live HLS stream that ended the audio when the next audio segment was not available yet
+- Fix the timestamps of 7.1 channel E-AC-3 HLS audio, and send both substreams of a frame as one sample
 
 v21.5.25-p3i.2 (2026-10-30)
 - Fix HLS audio starting before video after a seek, which froze the picture on Amlogic
