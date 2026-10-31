@@ -26,6 +26,7 @@
 #include "utils/log.h"
 
 #include <array>
+#include <cmath>
 
 #include <kodi/addon-instance/Inputstream.h>
 
@@ -1229,7 +1230,9 @@ bool CSession::SeekTime(double seekTime, unsigned int streamId, bool preceeding)
   }
 
   // correct for starting segment pts value of chapter and chapter offset within program
-  uint64_t seekTimeCorrected{static_cast<uint64_t>(seekTime * STREAM_TIME_BASE)};
+  // Round to the nearest microsecond. A time above the exact value skips a key
+  // frame at the seek time.
+  uint64_t seekTimeCorrected{static_cast<uint64_t>(std::llround(seekTime * STREAM_TIME_BASE))};
   int64_t ptsDiff{0};
   if (m_timingStream)
   {
