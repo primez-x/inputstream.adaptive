@@ -10,7 +10,10 @@
 
 #include "mpegts/tsDemuxer.h"
 
+#include <deque>
+#include <optional>
 #include <stdint.h>
+#include <utility>
 #include <vector>
 
 #include <bento4/Ap4Types.h>
@@ -42,20 +45,33 @@ public:
   bool ReadEndPacket();
 
   /*!
-   * \brief Wait for the PTS of the first PES of a new segment.
+   * \brief The data read from now on is a new segment. The session sets the
+   *        offset of the first segment after Initialize() reads the stream
+   *        information, so the first offset is the offset of that segment.
+   * \param offset The PTS offset of the segment
    */
-  void MarkSegmentStart();
+  void MarkSegmentStart(uint64_t offset);
+  struct SegmentStart
+  {
+    uint64_t pts; // PTS of the first PES of the segment, of the video if the video is enabled
+    uint64_t offset; // Offset of MarkSegmentStart()
+  };
   /*!
-   * \brief The PTS of the first PES after MarkSegmentStart(), of the video if
-   *        the video is enabled.
-   * \return The PTS, or PTS_UNSET while the PES is not read yet
+   * \brief The start of the segment of the current packet. The demuxer emits
+   *        a frame after later PES packets start, so the frame can be from a
+   *        segment before the segment of the last read.
+   * \return The start, or nothing while the PTS of the segment is unknown. An
+   *         audio frame of a segment can come before the first video PES of
+   *         the segment. Then the PTS diff of the segment before applies.
    */
-  uint64_t GetSegmentPts() const { return m_segmentPts; }
+  std::optional<SegmentStart> GetSegmentStart() const;
   /*!
-   * \brief True if the packet is from the new segment, and the stream of
-   *        GetSegmentPts() has no packets of the previous segment left.
+   * \brief True if the packet is before the frame that the last seek found, in
+   *        the stream of that frame. The read after the seek starts at the
+   *        PES of the frame, and an audio PES holds more than one frame. The
+   *        other streams start at the same position.
    */
-  bool IsSegmentPacket() const;
+  bool IsBeforeSeekFrame();
 
   uint64_t GetDts() const { return m_pkt.dts == PTS_UNSET ? PTS_UNSET : m_pkt.dts; }
   uint64_t GetPts() const { return m_pkt.pts == PTS_UNSET ? PTS_UNSET : m_pkt.pts; }
@@ -77,7 +93,7 @@ private:
   bool HandleProgramChange();
   bool HandleStreamChange(uint16_t pid);
 
-  TSDemux::AVContext* m_AVContext;
+  TSDemux::AVContext* m_AVContext{nullptr};
 
   AP4_ByteStream *m_stream;
 
@@ -86,9 +102,22 @@ private:
   uint32_t m_requiredMask;
   uint32_t m_typeMask;
   bool m_stopAtSegmentEnd{false}; // ReadPacket fails at the end of the current segment
-  bool m_segmentStart{false};
-  uint64_t m_segmentPts{PTS_UNSET};
-  uint16_t m_segmentPid{0};
+  struct Segment
+  {
+    uint32_t number;
+    std::optional<uint64_t> offset;
+    std::vector<std::pair<uint16_t, uint64_t>> pts; // PID and PTS of the first PES of each stream
+  };
+  // The last segments, the buffers hold frames of a few. The first segment is
+  // the segment of the stream information.
+  std::deque<Segment> m_segments{{0, {}, {}}};
+  uint32_t m_segment{0};
+  struct SeekFrame
+  {
+    uint16_t pid;
+    uint64_t pts;
+  };
+  std::optional<SeekFrame> m_seekFrame;
 
   struct TSINFO
   {

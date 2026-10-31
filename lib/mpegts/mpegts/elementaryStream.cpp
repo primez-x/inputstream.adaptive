@@ -35,8 +35,7 @@ ElementaryStream::ElementaryStream(uint16_t pes_pid)
   , es_end_of_data(false)
   , es_pes_start_pending(false)
   , es_pes_start_position(0)
-  , es_marked(false)
-  , es_mark_pointer(0)
+  , es_pes_start_segment(0)
   , es_found_frame(false)
   , es_frame_valid(false)
   , es_extraDataChanged(false)
@@ -65,52 +64,27 @@ void ElementaryStream::ClearBuffer()
 {
   ShiftPesStarts(es_len);
   es_len = es_consumed = es_pts_pointer = es_parsed = 0;
-  // The data of the marked PES and of the PES before is gone, later data is newer
-  es_mark_pointer = 0;
 }
 
-void ElementaryStream::MarkPes()
-{
-  es_marked = true;
-  es_mark_pointer = es_pts_pointer;
-}
-
-void ElementaryStream::ClearMark()
-{
-  es_marked = false;
-}
-
-bool ElementaryStream::IsMarked(const unsigned char* data) const
-{
-  // The parsers also assign a frame to a PES by the position of the frame start
-  return es_marked && es_buf && data >= es_buf + es_mark_pointer;
-}
-
-bool ElementaryStream::HasOnlyMarkedData() const
-{
-  return es_marked && es_consumed >= es_mark_pointer;
-}
-
-void ElementaryStream::StartPes(uint64_t position)
+void ElementaryStream::StartPes(uint64_t position, uint32_t segment)
 {
   es_pes_start_pending = true;
   es_pes_start_position = position;
+  es_pes_start_segment = segment;
 }
 
-bool ElementaryStream::GetPesPosition(const unsigned char* data, uint64_t& position) const
+const ElementaryStream::PesStart* ElementaryStream::GetPesStart(const unsigned char* data) const
 {
   if (!es_buf || data < es_buf)
-    return false;
+    return NULL;
+  // The parsers also assign a frame to a PES by the position of the frame start
   const size_t offset = data - es_buf;
   for (auto it = es_pes_starts.rbegin(); it != es_pes_starts.rend(); ++it)
   {
     if (it->offset <= offset)
-    {
-      position = it->position;
-      return true;
-    }
+      return &*it;
   }
-  return false;
+  return NULL;
 }
 
 void ElementaryStream::ShiftPesStarts(size_t consumed)
@@ -141,10 +115,6 @@ int ElementaryStream::Append(const unsigned char* buf, size_t len, bool new_pts)
         es_pts_pointer -= es_consumed;
       else
         es_pts_pointer = 0;
-      if (es_mark_pointer > es_consumed)
-        es_mark_pointer -= es_consumed;
-      else
-        es_mark_pointer = 0;
       ShiftPesStarts(es_consumed);
 
       es_consumed = 0;
@@ -184,9 +154,9 @@ int ElementaryStream::Append(const unsigned char* buf, size_t len, bool new_pts)
   {
     es_pes_start_pending = false;
     if (!es_pes_starts.empty() && es_pes_starts.back().offset == es_len)
-      es_pes_starts.back().position = es_pes_start_position;
+      es_pes_starts.back() = {es_len, es_pes_start_position, es_pes_start_segment};
     else
-      es_pes_starts.push_back({es_len, es_pes_start_position});
+      es_pes_starts.push_back({es_len, es_pes_start_position, es_pes_start_segment});
   }
 
   memcpy(es_buf + es_len, buf, len);

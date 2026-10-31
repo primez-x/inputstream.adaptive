@@ -76,29 +76,17 @@ AP4_Result CTSSampleReader::ReadSample()
   }
 
   // At the end of the stream, the frames left in the buffers follow
-  if (ReadPacket() ||
-      (!(m_adByteStream && m_adByteStream->waitingForSegment()) && ReadEndPacket()))
+  while (ReadPacket() ||
+         (!(m_adByteStream && m_adByteStream->waitingForSegment()) && ReadEndPacket()))
   {
-    //! @todo: there is something wrong on pts calculation,
-    //! m_ptsOffs have a value in seconds and so the substraction "m_pts - m_ptsOffs" looks to be inconsistent,
-    //! To have pts in seconds on m_pts must be: pts = GetDts() / 90000,
-    //! but packet PTS seem to be different from m_ptsOffs pts value, as if it did not include the period start
-    //! so the substraction "m_pts - m_ptsOffs" it is not a clear thing.
-    //! There is also something weird on HLS discontinuities (multiple chapters/periods)
-    //! where after a discontinuity the packet pts is lower than the last segment of previous period/discontinuity
-    //! this cause a VP resync e.g:
-    //!   debug <general>: CVideoPlayer::CheckContinuity - resync backward :1, prev:587175999.000000, curr:577170666.000000, diff:-10005333.000000
-    //!   debug <general>: CVideoPlayer::CheckContinuity - update correction: -10026666.000000
-    //! not sure if this is correct or not (tested with pluto-tv)
-    //! This code is present also on the others sample readers, that need to be verified
+    if (IsBeforeSeekFrame())
+      continue;
+
     m_dts = (GetDts() == PTS_UNSET) ? STREAM_NOPTS_VALUE : (GetDts() * 100) / 9;
     m_pts = (GetPts() == PTS_UNSET) ? STREAM_NOPTS_VALUE : (GetPts() * 100) / 9;
 
-    if (~m_ptsOffs && GetSegmentPts() != PTS_UNSET && IsSegmentPacket())
-    {
-      m_ptsDiff = (GetSegmentPts() * 100) / 9 - m_ptsOffs;
-      m_ptsOffs = ~0ULL;
-    }
+    if (const std::optional<SegmentStart> start{GetSegmentStart()})
+      m_ptsDiff = (start->pts * 100) / 9 - start->offset;
     return AP4_SUCCESS;
   }
   return EndOfData();
@@ -126,12 +114,10 @@ bool CTSSampleReader::IsSegmentEnd(uint64_t position)
 
 void CTSSampleReader::SetPTSOffset(uint64_t offset)
 {
-  m_ptsOffs = offset;
   // The demuxer emits a PES only when the next PES starts. So after a segment
-  // change, the next samples are still from the previous segment, and the
-  // offset applies from the first PES of the new segment. With muxed streams,
-  // the frames of the video set the time of the change.
-  MarkSegmentStart();
+  // change, the next samples are still from the previous segment, and each
+  // sample takes the diff of the segment of the sample.
+  MarkSegmentStart(offset);
 }
 
 void CTSSampleReader::Reset(bool bEOS)

@@ -70,6 +70,7 @@ namespace TSDemux
     void GoPosition(uint64_t pos, bool rp);
     uint64_t GetPosition() const;
     uint64_t GetNextPosition() const;
+    void SetSegment(uint32_t segment); ///< The data read from now on is in this media segment
     int ProcessTSPacket();
     int ProcessTSPayload();
 
@@ -100,6 +101,7 @@ namespace TSDemux
     size_t av_data_len;
     size_t av_pkt_size;
     unsigned char av_buf[AV_CONTEXT_PACKETSIZE];
+    uint32_t av_segment;
 
     // TS Streams context
     bool is_configured;

@@ -58,7 +58,6 @@ private:
   uint32_t m_typeMap[16];
   uint64_t m_pts{0};
   uint64_t m_dts{0};
-  uint64_t m_ptsOffs{~0ULL};
   int64_t m_ptsDiff{0};
   bool m_eos{false};
   bool m_started{false};

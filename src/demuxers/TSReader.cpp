@@ -22,6 +22,8 @@ using namespace UTILS;
 
 namespace
 {
+constexpr size_t MAX_SEGMENTS{8};
+
 void DebugLog(int level, char* msg)
 {
   if (msg[std::strlen(msg) - 1] == '\n')
@@ -60,6 +62,7 @@ TSReader::TSReader(AP4_ByteStream* stream, uint32_t requiredMask)
 bool TSReader::Initialize()
 {
   m_AVContext = new TSDemux::AVContext(this, 0, 0);
+  m_AVContext->SetSegment(m_segment);
   // Get stream Information
   if (!ReadPacket(true))
   {
@@ -88,6 +91,8 @@ void TSReader::Reset(bool resetPackets)
   m_AVContext->GoPosition(m_startPos, resetPackets);
   //mark invalid for Seek operations
   m_pkt.pts = PTS_UNSET;
+  if (resetPackets)
+    m_seekFrame.reset();
 }
 
 bool TSReader::StartStreaming(AP4_UI32 typeMask)
@@ -211,12 +216,13 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
 {
   const bool hasVideo{HasVideo()};
   uint64_t lastRecovery(static_cast<uint64_t>(m_startPos));
+  std::optional<SeekFrame> seekFrame; // The frame at lastRecovery or later
   // The stream cannot seek back into a segment after a read of the next
   // segment. So the scan reads the frames left in the buffers at the end of a
   // segment, before the next segment.
   uint64_t segmentEnd{0}; // The end time of the frames read
   bool nextSegment{false};
-  while (m_pkt.pts == PTS_UNSET || !preceeding || static_cast<uint64_t>(m_pkt.pts) < timeInTs)
+  while (true)
   {
     m_stopAtSegmentEnd = !nextSegment;
     const bool read{ReadPacket()};
@@ -230,28 +236,41 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
       // The seek time is after the frames of this segment
       nextSegment = true;
       lastRecovery = m_AVContext->GetPosition();
+      seekFrame.reset();
       continue;
     }
     nextSegment = false;
-    if (m_pkt.pts != PTS_UNSET)
-      segmentEnd = std::max(segmentEnd, static_cast<uint64_t>(m_pkt.pts) + m_pkt.duration);
+    if (m_pkt.pts == PTS_UNSET)
+      continue;
+    const uint64_t pts{static_cast<uint64_t>(m_pkt.pts)};
+    segmentEnd = std::max(segmentEnd, pts + m_pkt.duration);
+    // With video, the video frames set the seek position
+    if (hasVideo && GetStreamType() != INPUTSTREAM_TYPE_VIDEO)
+      continue;
     // The demuxer emits a frame only after a later PES starts. The frame
     // starts in the PES where the frame data starts.
     const TSDemux::ElementaryStream* stream{m_AVContext->GetStream(m_pkt.pid)};
-    uint64_t thisFrameStart;
-    if (!stream || !stream->GetPesPosition(m_pkt.data, thisFrameStart))
+    const TSDemux::ElementaryStream::PesStart* pes{stream ? stream->GetPesStart(m_pkt.data)
+                                                         : nullptr};
+    if (!pes)
       continue;
-    if (!hasVideo || m_pkt.recoveryPoint || thisFrameStart == m_startPos)
+    if (!hasVideo || m_pkt.recoveryPoint || pes->position == m_startPos)
     {
       // A preceeding seek lands on a frame at or before the seek time
-      if (preceeding && static_cast<uint64_t>(m_pkt.pts) > timeInTs)
+      if (preceeding && pts > timeInTs)
         break;
-      lastRecovery = thisFrameStart;
-      if (!preceeding && static_cast<uint64_t>(m_pkt.pts) >= timeInTs)
+      lastRecovery = pes->position;
+      // An audio PES holds more than one frame
+      seekFrame = SeekFrame{m_pkt.pid, pts};
+      if (pts >= timeInTs)
         break;
     }
+    // No later key frame is at or before the seek time
+    else if (preceeding && pts >= timeInTs)
+      break;
   }
   m_AVContext->GoPosition(lastRecovery, true);
+  m_seekFrame = seekFrame;
 
   return true;
 }
@@ -374,45 +393,65 @@ bool TSReader::HasVideo() const
   return false;
 }
 
-void TSReader::MarkSegmentStart()
+void TSReader::MarkSegmentStart(uint64_t offset)
 {
-  m_segmentStart = true;
-  m_segmentPts = PTS_UNSET;
-  for (auto& tsInfo : m_streamInfos)
-    tsInfo.m_stream->ClearMark();
+  if (!m_segments.back().offset)
+  {
+    m_segments.back().offset = offset;
+    return;
+  }
+  m_segments.push_back({++m_segment, offset, {}});
+  if (m_segments.size() > MAX_SEGMENTS)
+    m_segments.pop_front();
+  // The PES packets that start from now on are in the new segment
+  if (m_AVContext)
+    m_AVContext->SetSegment(m_segment);
 }
 
-bool TSReader::IsSegmentPacket() const
+std::optional<TSReader::SegmentStart> TSReader::GetSegmentStart() const
 {
-  // The demuxer still holds frames of the previous segment when the segment
-  // changes, and emits them before the frames of the new segment
   const TSDemux::ElementaryStream* stream{m_AVContext->GetStream(m_pkt.pid)};
-  const TSDemux::ElementaryStream* segmentStream{m_AVContext->GetStream(m_segmentPid)};
-  return stream && stream->IsMarked(m_pkt.data) && segmentStream &&
-         segmentStream->HasOnlyMarkedData();
+  const TSDemux::ElementaryStream::PesStart* pes{stream ? stream->GetPesStart(m_pkt.data)
+                                                       : nullptr};
+  if (!pes)
+    return {};
+  const auto segment{std::find_if(m_segments.begin(), m_segments.end(),
+                                  [pes](const Segment& s) { return s.number == pes->segment; })};
+  if (segment == m_segments.end() || !segment->offset)
+    return {};
+  // With video, the audio PES can start before the video PES in some segments
+  const bool hasVideo{HasVideo()};
+  for (const auto& [pid, pts] : segment->pts)
+  {
+    for (const auto& tsInfo : m_streamInfos)
+    {
+      if (tsInfo.m_stream->pid == pid && tsInfo.m_enabled &&
+          (tsInfo.m_streamType == INPUTSTREAM_TYPE_VIDEO || !hasVideo))
+        return SegmentStart{pts, *segment->offset};
+    }
+  }
+  return {};
+}
+
+bool TSReader::IsBeforeSeekFrame()
+{
+  if (!m_seekFrame || m_pkt.pid != m_seekFrame->pid)
+    return false;
+  if (m_pkt.pts != PTS_UNSET && static_cast<uint64_t>(m_pkt.pts) < m_seekFrame->pts)
+    return true;
+  m_seekFrame.reset();
+  return false;
 }
 
 void TSReader::UpdateSegmentPts(TSDemux::ElementaryStream* stream)
 {
-  if (!m_segmentStart)
-    return;
-
-  for (const auto& tsInfo : m_streamInfos)
-  {
-    if (tsInfo.m_stream != stream || !tsInfo.m_enabled)
-      continue;
-
-    // The first PES of each stream in the new segment
-    if (!stream->HasMark())
-      stream->MarkPes();
-    // With video, the audio PES can start before the video PES in some segments
-    if (m_segmentPts == PTS_UNSET && (tsInfo.m_streamType == INPUTSTREAM_TYPE_VIDEO || !HasVideo()))
-    {
-      m_segmentPts = stream->c_pts;
-      m_segmentPid = stream->pid;
-    }
-    return;
-  }
+  // The PES header is in the segment of the last read. A seek inside the
+  // segment reads the PES headers again. The read of the stream information
+  // reads the first segment before the streams are enabled.
+  auto& segmentPts{m_segments.back().pts};
+  if (std::none_of(segmentPts.begin(), segmentPts.end(),
+                   [stream](const auto& pts) { return pts.first == stream->pid; }))
+    segmentPts.emplace_back(stream->pid, stream->c_pts);
 }
 
 bool TSReader::HandleProgramChange()
