@@ -26,6 +26,13 @@ namespace
 {
 constexpr size_t MAX_SEGMENTS{8};
 
+// A PTS has 33 bits, and the PTS after PTS_MASK is 0
+bool IsPtsBefore(uint64_t pts, uint64_t other)
+{
+  const uint64_t distance{(other - pts) & PTS_MASK};
+  return distance != 0 && distance <= PTS_MASK / 2;
+}
+
 void DebugLog(int level, char* msg)
 {
   if (msg[std::strlen(msg) - 1] == '\n')
@@ -440,10 +447,17 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
 
 bool TSReader::ReadPacket(bool scanStreamInfo)
 {
-  const bool read{ReadNextPacket(scanStreamInfo)};
-  if (read)
-    m_parsersReset = false;
-  return read;
+  if (!ReadNextPacket(scanStreamInfo))
+    return false;
+  m_parsersReset = false;
+  // The first audio PES of a segment can have no PTS, the first frame has the
+  // PTS of the stream in the segment
+  if (m_pkt.pts != PTS_UNSET && GetStreamType() == INPUTSTREAM_TYPE_AUDIO)
+  {
+    if (const std::optional<uint32_t> segment{GetPacketSegment()})
+      UpdateSegmentFramePts(*segment, m_pkt.pid, m_pkt.pts);
+  }
+  return true;
 }
 
 bool TSReader::ReadNextPacket(bool scanStreamInfo)
@@ -574,7 +588,7 @@ std::map<uint16_t, TSDemux::ElementaryStream::Clock> TSReader::ReadClocks(
           continue;
         if (frame->pkt.pts != PTS_UNSET)
         {
-          clocks[pid] = {first->pes.pts, first->pes.dts, frame->pkt.pts - duration};
+          clocks[pid] = {first->pes.pts, first->pes.dts, (frame->pkt.pts - duration) & PTS_MASK};
           found = true;
           break;
         }
@@ -661,13 +675,27 @@ std::optional<TSReader::SegmentStart> TSReader::GetSegmentStart() const
 {
   if (m_frameCopy && m_pkt.data == m_frameCopy->data.data())
     return m_frameCopy->segmentStart;
+  if (const std::optional<uint32_t> segment{GetPacketSegment()})
+    return GetSegmentStart(*segment);
+  return {};
+}
+
+std::optional<uint32_t> TSReader::GetPacketSegment() const
+{
+  if (m_frameCopy && m_pkt.data == m_frameCopy->data.data())
+    return {};
   const TSDemux::ElementaryStream* stream{m_AVContext->GetStream(m_pkt.pid)};
   const TSDemux::ElementaryStream::PesStart* pes{stream ? stream->GetPesStart(m_pkt.data)
                                                        : nullptr};
   if (!pes)
     return {};
+  return pes->segment;
+}
+
+std::optional<TSReader::SegmentStart> TSReader::GetSegmentStart(uint32_t number) const
+{
   const auto segment{std::find_if(m_segments.begin(), m_segments.end(),
-                                  [pes](const Segment& s) { return s.number == pes->segment; })};
+                                  [number](const Segment& s) { return s.number == number; })};
   if (segment == m_segments.end() || !segment->offset)
     return {};
   // With video, the audio PES can start before the video PES in some segments
@@ -706,6 +734,20 @@ void TSReader::UpdateSegmentPts(TSDemux::ElementaryStream* stream)
       std::none_of(segment->pts.begin(), segment->pts.end(),
                    [stream](const auto& pts) { return pts.first == stream->pid; }))
     segment->pts.emplace_back(stream->pid, stream->c_pts);
+}
+
+void TSReader::UpdateSegmentFramePts(uint32_t number, uint16_t pid, uint64_t pts)
+{
+  const auto segment{std::find_if(m_segments.begin(), m_segments.end(),
+                                  [number](const Segment& s) { return s.number == number; })};
+  if (segment == m_segments.end())
+    return;
+  const auto first{std::find_if(segment->pts.begin(), segment->pts.end(),
+                                [pid](const auto& first) { return first.first == pid; })};
+  if (first == segment->pts.end())
+    segment->pts.emplace_back(pid, pts);
+  else if (IsPtsBefore(pts, first->second))
+    first->second = pts;
 }
 
 bool TSReader::HandleProgramChange()

@@ -54,7 +54,7 @@ public:
   void MarkSegmentStart(uint64_t offset);
   struct SegmentStart
   {
-    uint64_t pts; // PTS of the first PES of the segment, of the video if the video is enabled
+    uint64_t pts; // PTS of the first frame of the segment, of the video if the video is enabled
     uint64_t offset; // Offset of MarkSegmentStart()
   };
   /*!
@@ -66,6 +66,17 @@ public:
    *         the segment. Then the PTS diff of the segment before applies.
    */
   std::optional<SegmentStart> GetSegmentStart() const;
+  std::optional<SegmentStart> GetSegmentStart(uint32_t segment) const;
+  /*!
+   * \brief The segment of the PES where the current packet starts. Nothing for
+   *        a copy of a frame.
+   */
+  std::optional<uint32_t> GetPacketSegment() const;
+  /*!
+   * \brief An audio frame with a PTS before the PTS of the stream in the
+   *        segment sets that PTS. A PES without a PTS can start the segment.
+   */
+  void UpdateSegmentFramePts(uint32_t segment, uint16_t pid, uint64_t pts);
   /*!
    * \brief True if the packet is before the frame that the last seek found, in
    *        the stream of that frame. The read after the seek starts at the
@@ -84,6 +95,7 @@ public:
   uint64_t GetDts() const { return m_pkt.dts == PTS_UNSET ? PTS_UNSET : m_pkt.dts; }
   uint64_t GetPts() const { return m_pkt.pts == PTS_UNSET ? PTS_UNSET : m_pkt.pts; }
   uint64_t GetDuration() const { return m_pkt.duration; }
+  uint16_t GetPid() const { return m_pkt.pid; }
   const AP4_Byte *GetPacketData() const { return m_pkt.data; };
   const AP4_Size GetPacketSize() const { return static_cast<AP4_Size>(m_pkt.size); }
   const INPUTSTREAM_TYPE GetStreamType() const;
@@ -131,7 +143,7 @@ private:
   {
     uint32_t number;
     std::optional<uint64_t> offset;
-    std::vector<std::pair<uint16_t, uint64_t>> pts; // PID and PTS of the first PES of each stream
+    std::vector<std::pair<uint16_t, uint64_t>> pts; // PID and PTS of the first frame of each stream
   };
   // The last segments, the buffers hold frames of a few. The first segment is
   // the segment of the stream information.

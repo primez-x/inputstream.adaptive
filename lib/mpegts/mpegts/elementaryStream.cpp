@@ -157,7 +157,7 @@ int64_t ElementaryStream::AudioFramePts(size_t offset, int64_t duration)
   }
   const int64_t pts = es_next_pts;
   if (es_next_pts != PTS_UNSET)
-    es_next_pts += duration;
+    es_next_pts = (es_next_pts + duration) & PTS_MASK; // The PTS has 33 bits
   return pts;
 }
 

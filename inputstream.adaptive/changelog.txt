@@ -29,6 +29,7 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix MPEG-2 and MPEG-2.5 Layer III TS audio (MP3 at 24 kHz or less), which joined each two frames into one sample with the wrong timestamps, the timestamps of Layer I TS audio, and the channel count of mono MPEG TS audio
 - Fix the timestamps of TS E-AC-3 frames with fewer than 6 blocks, and of 7.1 channel TS E-AC-3, and send both substreams of a frame as one sample
 - Fix the timestamps of AAC frames with more than one raw data block in TS and HLS packed audio, and of LATM frames with more than one sub frame
+- Fix the timing offset of a TS audio segment whose first PES has no PTS, which was off by the frames before the first PTS, and the timestamps of TS audio frames across the 33 bit PTS wrap before the first PTS and inside a PES
 - Fix the segment times of HLS streams with EXTINF durations finer than 1 ms, which drifted from the media time (0.24 s after one hour of a YouTube stream), so a seek near a segment start could continue at the next segment
 
 v21.5.25-p3i.3 (2026-10-30)

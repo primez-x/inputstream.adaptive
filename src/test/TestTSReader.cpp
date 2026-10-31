@@ -2428,6 +2428,161 @@ TEST_F(TSSampleReaderTest, AudioWithoutAPtsWaitsForTheNextLiveSegment)
   EXPECT_EQ(read, expected);
 }
 
+// The PTS diff of a segment comes from the PTS of the first frame of the
+// segment, also when the first audio PES of the segment has no PTS. The video
+// sets the diff when the video is enabled. A seek uses the diff to find the
+// frame of a time.
+TEST_F(TSSampleReaderTest, PtsDiffOfAudioWithoutPtsComesFromTheFirstFrame)
+{
+  for (const bool video : {false, true})
+  for (const int firstPts : {0, 3})
+  {
+    SCOPED_TRACE(testing::Message() << (video ? "video and audio" : "audio")
+                                    << ", PTS in audio PES " << firstPts << " + 6n");
+    TSWriter writer;
+    std::vector<uint8_t> segments[2];
+    for (int s = 0; s < 2; ++s)
+    {
+      writer.WriteTables(video);
+      for (int v = 5 * s; v < 5 * s + 5; ++v)
+      {
+        if (video)
+          writer.WriteVideo(v, 1, 5);
+        for (int a = 2 * v; a < 2 * v + 2; ++a)
+          writer.WriteAudioFrame(a, a % 6 == firstPts);
+      }
+      segments[s] = writer.Take();
+    }
+    // The video frame v starts with the audio frame 2v
+    Open(segments[0], Time(AudioPts(0)) - SegmentDiff(0),
+         video ? INPUTSTREAM_TYPE_VIDEO : INPUTSTREAM_TYPE_AUDIO);
+    AppendSegment(segments[1], Time(AudioPts(10)) - SegmentDiff(1));
+    if (video)
+      m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+    std::vector<std::pair<uint64_t, int64_t>> read;
+    std::vector<std::pair<uint64_t, int64_t>> expected;
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample())
+    {
+      read.emplace_back(m_reader->PTS(), m_reader->GetPTSDiff());
+      expected.emplace_back(m_reader->PTS(),
+                            SegmentDiff(m_reader->PTS() >= Time(AudioPts(10)) ? 1 : 0));
+    }
+    EXPECT_EQ(read.size(), video ? 30 : 20);
+    EXPECT_EQ(read, expected);
+  }
+
+  {
+    // A video frame in a PES without a PTS has the PTS of the PES before, here
+    // of the segment before. The first video PES with a PTS sets the diff.
+    TSWriter writer;
+    writer.WriteTables(true);
+    writer.WriteVideo(0, 5, 5);
+    const std::vector<uint8_t> first{writer.Take()};
+    writer.WriteTables(true);
+    writer.WriteVideoFrameWithoutPts(5, H264.keyFrame);
+    writer.WriteVideo(6, 4, 5);
+    Open(first, Time(VideoPts(0)) - SegmentDiff(0), INPUTSTREAM_TYPE_VIDEO);
+    AppendSegment(writer.Take(), Time(VideoPts(6)) - SegmentDiff(1));
+    std::vector<std::pair<uint64_t, int64_t>> read;
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample())
+      read.emplace_back(m_reader->PTS(), m_reader->GetPTSDiff());
+    std::vector<std::pair<uint64_t, int64_t>> expected;
+    for (int v = 0; v < 10; ++v)
+      expected.emplace_back(Time(VideoPts(v == 5 ? 4 : v)), SegmentDiff(v < 5 ? 0 : 1));
+    EXPECT_EQ(read, expected);
+  }
+
+  // A seek with the diff of the first frame lands on the frame of the time
+  TSWriter writer;
+  writer.WriteTables(false);
+  for (int a = 0; a < 30; ++a)
+    writer.WriteAudioFrame(a, a % 6 == 3);
+  Open(writer.Take(), Time(AudioPts(0)) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+  bool started{false};
+  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+  ASSERT_EQ(m_reader->GetPTSDiff(), DIFF);
+  m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+  m_segments->m_segmentReadPos = 0;
+  m_reader->Reset(false);
+  ASSERT_TRUE(m_reader->TimeSeek(Time(AudioPts(6)) - DIFF + m_reader->GetPTSDiff(), true));
+  EXPECT_EQ(FrameIndex(), 6);
+}
+
+// A PTS has 33 bits, and the PTS after 0x1FFFFFFFF is 0. The audio frames
+// before a PTS, and the frames after a PTS in the same PES, take the PTS that
+// a PES of their own would carry, also across that wrap.
+TEST_F(TSSampleReaderTest, AudioFramePtsWrapsAfter33Bits)
+{
+  constexpr uint64_t WRAP{uint64_t{1} << 33};
+  // The wrap comes after the frames 0 and 1
+  constexpr uint64_t SHIFT{WRAP - 2 * AUDIO_TICKS - BASE_PTS};
+  const auto wrappedPts = [](int frame) { return (AudioPts(frame) + SHIFT) % WRAP; };
+  // Moves each PES PTS of the stream by SHIFT
+  const auto shiftPts = [](std::vector<uint8_t> data)
+  {
+    for (size_t packet = 0; packet < data.size(); packet += 188)
+    {
+      uint8_t* ts{&data[packet]};
+      if (!(ts[1] & 0x40) || (((ts[1] & 0x1F) << 8) | ts[2]) != AUDIO_PID)
+        continue;
+      uint8_t* pes{ts + 4 + ((ts[3] & 0x20) ? 1 + ts[4] : 0)};
+      if (!(pes[7] & 0x80))
+        continue;
+      uint8_t* field{pes + 9};
+      uint64_t pts{(uint64_t{field[0] & 0x0Eu} << 29) | (uint64_t{field[1]} << 22) |
+                   (uint64_t{field[2] & 0xFEu} << 14) | (uint64_t{field[3]} << 7) |
+                   (field[4] >> 1)};
+      pts = (pts + SHIFT) % WRAP;
+      field[0] = static_cast<uint8_t>(0x21 | ((pts >> 29) & 0x0E));
+      field[1] = static_cast<uint8_t>(pts >> 22);
+      field[2] = static_cast<uint8_t>(((pts >> 14) & 0xFE) | 1);
+      field[3] = static_cast<uint8_t>(pts >> 7);
+      field[4] = static_cast<uint8_t>(((pts << 1) & 0xFE) | 1);
+    }
+    return data;
+  };
+  for (const int pesFrames : {1, 6})
+  for (const bool seek : {false, true})
+  {
+    SCOPED_TRACE(testing::Message() << pesFrames << " frames per PES, "
+                                    << (seek ? "seek to frame 1" : "start"));
+    TSWriter writer;
+    writer.WriteTables(false);
+    if (pesFrames == 1)
+    {
+      // The first PTS comes after the wrap
+      for (int a = 0; a < 30; ++a)
+        writer.WriteAudioFrame(a, a % 6 == 3);
+    }
+    else
+      writer.WriteAudio(AudioPts(0), 0, 30, pesFrames, false);
+    Open(shiftPts(writer.Take()), Time(wrappedPts(0)) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+    bool started{false};
+    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+    if (seek)
+    {
+      m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+      m_segments->m_segmentReadPos = 0;
+      m_reader->Reset(false);
+      ASSERT_TRUE(m_reader->TimeSeek(Time(wrappedPts(1)), true));
+    }
+    std::vector<std::pair<int, uint64_t>> read;
+    do
+    {
+      read.emplace_back(FrameIndex(), m_reader->PTS());
+      EXPECT_EQ(m_reader->GetPTSDiff(), DIFF) << FrameIndex();
+    } while (read.size() < 6 && AP4_SUCCEEDED(m_reader->ReadSample()));
+    std::vector<std::pair<int, uint64_t>> expected;
+    for (int a = seek ? 1 : 0; a < (seek ? 7 : 6); ++a)
+      expected.emplace_back(a, Time(wrappedPts(a)));
+    EXPECT_EQ(read, expected);
+  }
+}
+
 // A seek can land on a key frame whose PES has no PTS. The read after the
 // seek returns that frame with the PTS that the seek found, then the next frames.
 TEST_F(TSSampleReaderTest, ASeekToAKeyFrameInAPesWithoutPtsReturnsTheFrame)

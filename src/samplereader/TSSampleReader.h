@@ -90,6 +90,8 @@ private:
   struct Sample
   {
     AP4_UI32 streamId;
+    uint16_t pid;
+    std::optional<uint32_t> segment; // See TSReader::GetPacketSegment()
     uint64_t dts;
     uint64_t pts;
     uint64_t duration;

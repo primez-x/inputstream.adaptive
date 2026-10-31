@@ -143,8 +143,8 @@ AP4_Result CTSSampleReader::EndOfData()
 
 CTSSampleReader::Sample CTSSampleReader::PacketSample() const
 {
-  return {GetStreamId(), m_dts, m_pts, TSReader::GetDuration(), m_ptsDiff,
-          {GetPacketData(), GetPacketData() + GetPacketSize()}};
+  return {GetStreamId(), GetPid(), GetPacketSegment(), m_dts, m_pts, TSReader::GetDuration(),
+          m_ptsDiff, {GetPacketData(), GetPacketData() + GetPacketSize()}};
 }
 
 AP4_Result CTSSampleReader::NextSample()
@@ -167,14 +167,23 @@ uint64_t CTSSampleReader::UntimedDuration() const
 
 void CTSSampleReader::ReleaseUntimed(uint64_t pts)
 {
-  // The last frame has the PTS, each frame before ends where the next starts
+  // The last frame has the PTS, each frame before ends where the next starts.
+  // The first frame of a segment can set the PTS of the segment.
   if (pts != PTS_UNSET)
   {
     for (auto sample{std::next(m_untimed.rbegin())}; sample != m_untimed.rend(); ++sample)
     {
-      pts -= sample->duration;
+      pts = (pts - sample->duration) & PTS_MASK;
       sample->dts = sample->pts = (pts * 100) / 9;
+      if (sample->segment)
+        UpdateSegmentFramePts(*sample->segment, sample->pid, pts);
     }
+  }
+  for (Sample& sample : m_untimed)
+  {
+    if (const std::optional<SegmentStart> start{sample.segment ? GetSegmentStart(*sample.segment)
+                                                               : std::nullopt})
+      sample.ptsDiff = (start->pts * 100) / 9 - start->offset;
   }
   std::move(m_untimed.begin(), m_untimed.end(), std::back_inserter(m_samples));
   m_untimed.clear();
