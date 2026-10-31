@@ -15,6 +15,7 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix a seek, a stop or a read that could wait forever after the end of a download, because the reader did not get the signal of the download end
 - Fix a seek in an H.264 or HEVC TS stream to a key frame that uses the parameter sets of an earlier frame, which ended the stream
 - Fix a seek in an MPEG-2 TS stream to an I picture without a sequence header, which continued at the next sequence header
+- Fix a seek in a TS stream to a key frame whose PES starts in the segment before, which continued at the next key frame and lost the audio of a PES across the two segments
 
 v21.5.25-p3i.3 (2026-10-30)
 - Fix a seek in a live HLS stream that ended the audio when the next audio segment was not available yet

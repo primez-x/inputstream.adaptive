@@ -125,6 +125,17 @@ private:
     uint64_t pts;
   };
   std::optional<SeekFrame> m_seekFrame;
+  // A frame of a PES that starts before the position where the read after a
+  // seek starts. The stream cannot read the segment before again.
+  struct FrameCopy
+  {
+    TSDemux::STREAM_PKT pkt;
+    std::vector<uint8_t> data;
+    std::optional<SegmentStart> segmentStart;
+    uint64_t pesPosition;
+  };
+  std::deque<FrameCopy> m_frameCopies; // The read after a seek starts with these frames
+  std::optional<FrameCopy> m_frameCopy; // The data of the packet, if the packet is a copy
 
   struct TSINFO
   {

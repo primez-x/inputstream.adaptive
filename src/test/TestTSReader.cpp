@@ -1271,6 +1271,228 @@ TEST_F(TSSampleReaderTest, PtsDiffOfAPesHeaderAcrossTwoSegments)
   EXPECT_EQ(frame, 2 * SEGMENT_VIDEO_FRAMES);
 }
 
+// The last key frame of a segment can continue in the next segment, with a
+// part of the PES header or with a part of the frame data. The stream cannot
+// read the previous segment again, but a seek still lands on that key frame,
+// also when the seek waits for the next live segment.
+TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
+{
+  constexpr int SPLIT_FRAME{SEGMENT_VIDEO_FRAMES - 1};
+  std::vector<uint8_t> bigKeyFrame{H264.keyFrame};
+  bigKeyFrame.resize(500, 0);
+  // 9 of the 14 bytes of the PES header, or the PES header and a part of the frame
+  for (const size_t firstPacket : {size_t{9}, size_t{184}})
+  {
+    TSWriter writer;
+    writer.WriteTables(true);
+    writer.WriteVideo(0, SPLIT_FRAME, 5);
+    std::vector<uint8_t> first{writer.Take()};
+    writer.WriteVideoFrame(SPLIT_FRAME, bigKeyFrame, firstPacket);
+    const std::vector<uint8_t> split{writer.Take()};
+    first.insert(first.end(), split.begin(), split.begin() + 188);
+    writer.WriteTables(true);
+    std::vector<uint8_t> second{writer.Take()};
+    second.insert(second.end(), split.begin() + 188, split.end());
+    writer.WriteVideo(SEGMENT_VIDEO_FRAMES, SEGMENT_VIDEO_FRAMES, 5);
+    const std::vector<uint8_t> rest{writer.Take()};
+    second.insert(second.end(), rest.begin(), rest.end());
+
+    for (const bool live : {false, true})
+    for (const bool preceeding : {true, false})
+    for (const uint64_t target : {VideoPts(SPLIT_FRAME - 2), VideoPts(SPLIT_FRAME),
+                                  VideoPts(SPLIT_FRAME) + VIDEO_TICKS / 2})
+    {
+      SCOPED_TRACE(testing::Message() << "first packet " << firstPacket << ", target "
+                                      << target << (preceeding ? "" : ", not preceeding")
+                                      << (live ? ", live" : ""));
+      const int landing{preceeding && target < VideoPts(SPLIT_FRAME) ? 10
+                        : !preceeding && target > VideoPts(SPLIT_FRAME) ? SEGMENT_VIDEO_FRAMES
+                                                                         : SPLIT_FRAME};
+      // The live seeks read the next segment for the landing frame
+      if (live && landing < SPLIT_FRAME)
+        continue;
+      Open(first, Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+      if (live)
+        m_segments->m_waitingForSegment = true;
+      else
+        AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+      // The session seeks to a resume time before the first read
+      m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+      m_segments->m_segmentReadPos = 0;
+      m_reader->Reset(false);
+      ASSERT_TRUE(m_reader->TimeSeek(Time(target), preceeding));
+      if (live)
+      {
+        EXPECT_FALSE(m_reader->EOS());
+        AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+        m_segments->m_waitingForSegment = false;
+        ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+      }
+      // The PTS and the PTS diff of each frame
+      std::vector<std::pair<uint64_t, int64_t>> read;
+      AP4_Size landingSize{m_reader->GetSampleDataSize()};
+      do
+        read.emplace_back(m_reader->PTS(), m_reader->GetPTSDiff());
+      while (AP4_SUCCEEDED(m_reader->ReadSample()));
+      std::vector<std::pair<uint64_t, int64_t>> expected;
+      for (int frame = landing; frame < 2 * SEGMENT_VIDEO_FRAMES; ++frame)
+        expected.emplace_back(Time(VideoPts(frame)), SegmentDiff(frame / SEGMENT_VIDEO_FRAMES));
+      EXPECT_EQ(read, expected);
+      if (landing == SPLIT_FRAME)
+        EXPECT_GE(landingSize, bigKeyFrame.size() - 1);
+    }
+  }
+}
+
+// The last video and audio PES of a segment can continue in the next segment.
+// After a seek to the key frame of that video PES, the audio of that audio PES
+// follows the key frame, as the stream cannot read the PES again.
+TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTheSegments)
+{
+  constexpr int SPLIT_FRAME{SEGMENT_VIDEO_FRAMES - 1};
+  constexpr int SPLIT_AUDIO{2 * SEGMENT_VIDEO_FRAMES};
+  constexpr int SPLIT_FRAMES{4};
+  // The audio of the next segment comes before or after the video of a frame.
+  // With the video first, the rest of the audio PES comes after the next video PES.
+  for (const bool audioFirst : {true, false})
+  for (const bool preceeding : {true, false})
+  {
+    SCOPED_TRACE(testing::Message() << (audioFirst ? "audio first" : "video first")
+                                    << (preceeding ? "" : ", not preceeding"));
+    TSWriter writer;
+    writer.WriteTables(true);
+    for (int v = 0; v < SPLIT_FRAME; ++v)
+    {
+      writer.WriteAudio(AudioPts(2 * v) - AUDIO_LEAD, 2 * v, 2, 1, false);
+      writer.WriteVideo(v, 1, 5);
+    }
+    writer.WriteAudio(AudioPts(2 * SPLIT_FRAME) - AUDIO_LEAD, 2 * SPLIT_FRAME, 2, 1, false);
+    std::vector<uint8_t> first{writer.Take()};
+    // 9 of the 14 bytes of the PES header of the key frame
+    writer.WriteVideoFrame(SPLIT_FRAME, H264.keyFrame, 9);
+    const std::vector<uint8_t> keyFrame{writer.Take()};
+    writer.WriteAudio(AudioPts(SPLIT_AUDIO) - AUDIO_LEAD, SPLIT_AUDIO, SPLIT_FRAMES, SPLIT_FRAMES,
+                      false);
+    const std::vector<uint8_t> audio{writer.Take()};
+    first.insert(first.end(), keyFrame.begin(), keyFrame.begin() + 188);
+    first.insert(first.end(), audio.begin(), audio.begin() + 188);
+    writer.WriteTables(true);
+    std::vector<uint8_t> second{writer.Take()};
+    second.insert(second.end(), keyFrame.begin() + 188, keyFrame.end());
+    if (audioFirst)
+      second.insert(second.end(), audio.begin() + 188, audio.end());
+    for (int v = SEGMENT_VIDEO_FRAMES; v < 2 * SEGMENT_VIDEO_FRAMES; ++v)
+    {
+      const int a{2 * v + SPLIT_FRAMES};
+      if (!audioFirst)
+        writer.WriteVideo(v, 1, 5);
+      if (!audioFirst && v == SEGMENT_VIDEO_FRAMES)
+      {
+        const std::vector<uint8_t> video{writer.Take()};
+        second.insert(second.end(), video.begin(), video.end());
+        second.insert(second.end(), audio.begin() + 188, audio.end());
+      }
+      writer.WriteAudio(AudioPts(a) - AUDIO_LEAD, a, 2, 1, false);
+      if (audioFirst)
+        writer.WriteVideo(v, 1, 5);
+    }
+    const std::vector<uint8_t> rest{writer.Take()};
+    second.insert(second.end(), rest.begin(), rest.end());
+
+    Open(first, Time(VideoPts(0)) - SegmentDiff(0), INPUTSTREAM_TYPE_VIDEO);
+    AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+    m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+    bool started{false};
+    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+    m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+    m_segments->m_segmentReadPos = 0;
+    m_reader->Reset(false);
+    ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(SPLIT_FRAME) - (preceeding ? 0 : VIDEO_TICKS / 2)),
+                                   preceeding));
+    ASSERT_EQ(m_reader->GetStreamId(), VIDEO_ID);
+    EXPECT_EQ(m_reader->PTS(), Time(VideoPts(SPLIT_FRAME)));
+    EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(0));
+    // The audio frames, and the PTS diff of each
+    std::vector<std::pair<int, int64_t>> read;
+    int video{SPLIT_FRAME + 1};
+    while (read.size() < 2 * SPLIT_FRAMES + 2 && AP4_SUCCEEDED(m_reader->ReadSample()))
+    {
+      if (m_reader->GetStreamId() == VIDEO_ID)
+        EXPECT_EQ(m_reader->PTS(), Time(VideoPts(video++)));
+      else
+        read.emplace_back(FrameIndex(), m_reader->GetPTSDiff());
+    }
+    // The seek read the first video PES of the next segment, so all audio of
+    // that segment takes the diff of that segment
+    std::vector<std::pair<int, int64_t>> expected;
+    for (int a = SPLIT_AUDIO; a < SPLIT_AUDIO + 2 * SPLIT_FRAMES + 2; ++a)
+      expected.emplace_back(a, SegmentDiff(a < SPLIT_AUDIO + SPLIT_FRAMES ? 0 : 1));
+    EXPECT_EQ(read, expected);
+  }
+}
+
+// The audio can end with a PES that continues in the next segment. After a
+// seek to the key frame of the segment end, the reader takes the rest of that
+// audio PES and the read continues in the next segments.
+TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioThatEnds)
+{
+  constexpr int SPLIT_FRAME{SEGMENT_VIDEO_FRAMES - 1};
+  constexpr int SPLIT_AUDIO{2 * SEGMENT_VIDEO_FRAMES};
+  constexpr int SPLIT_FRAMES{4};
+  TSWriter writer;
+  writer.WriteTables(true);
+  for (int v = 0; v < SPLIT_FRAME; ++v)
+  {
+    writer.WriteAudio(AudioPts(2 * v) - AUDIO_LEAD, 2 * v, 2, 1, false);
+    writer.WriteVideo(v, 1, 5);
+  }
+  writer.WriteAudio(AudioPts(2 * SPLIT_FRAME) - AUDIO_LEAD, 2 * SPLIT_FRAME, 2, 1, false);
+  std::vector<uint8_t> first{writer.Take()};
+  writer.WriteVideoFrame(SPLIT_FRAME, H264.keyFrame, 9);
+  const std::vector<uint8_t> keyFrame{writer.Take()};
+  writer.WriteAudio(AudioPts(SPLIT_AUDIO) - AUDIO_LEAD, SPLIT_AUDIO, SPLIT_FRAMES, SPLIT_FRAMES,
+                    false);
+  const std::vector<uint8_t> audio{writer.Take()};
+  first.insert(first.end(), keyFrame.begin(), keyFrame.begin() + 188);
+  first.insert(first.end(), audio.begin(), audio.begin() + 188);
+  writer.WriteTables(true);
+  std::vector<uint8_t> second{writer.Take()};
+  second.insert(second.end(), keyFrame.begin() + 188, keyFrame.end());
+  second.insert(second.end(), audio.begin() + 188, audio.end());
+  writer.WriteVideo(SEGMENT_VIDEO_FRAMES, SEGMENT_VIDEO_FRAMES, 5);
+  const std::vector<uint8_t> rest{writer.Take()};
+  second.insert(second.end(), rest.begin(), rest.end());
+  writer.WriteTables(true);
+  writer.WriteVideo(2 * SEGMENT_VIDEO_FRAMES, SEGMENT_VIDEO_FRAMES, 5);
+  const std::vector<uint8_t> third{writer.Take()};
+
+  Open(first, Time(VideoPts(0)) - SegmentDiff(0), INPUTSTREAM_TYPE_VIDEO);
+  AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+  AppendSegment(third, Time(VideoPts(2 * SEGMENT_VIDEO_FRAMES)) - SegmentDiff(2));
+  m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+  bool started{false};
+  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+  m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+  m_segments->m_segmentReadPos = 0;
+  m_reader->Reset(false);
+  ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(SPLIT_FRAME)), true));
+  std::vector<uint64_t> video;
+  std::vector<int> audioFrames;
+  do
+  {
+    if (m_reader->GetStreamId() == VIDEO_ID)
+      video.push_back(m_reader->PTS());
+    else
+      audioFrames.push_back(FrameIndex());
+  } while (AP4_SUCCEEDED(m_reader->ReadSample()));
+  std::vector<uint64_t> expectedVideo;
+  for (int v = SPLIT_FRAME; v < 3 * SEGMENT_VIDEO_FRAMES; ++v)
+    expectedVideo.push_back(Time(VideoPts(v)));
+  EXPECT_EQ(video, expectedVideo);
+  EXPECT_EQ(audioFrames, (std::vector<int>{SPLIT_AUDIO, SPLIT_AUDIO + 1, SPLIT_AUDIO + 2,
+                                           SPLIT_AUDIO + 3}));
+}
+
 // A PES of audio holds several frames. A seek lands on the frame of the seek
 // time, not on the first frame of its PES.
 TEST_F(TSSampleReaderTest, AudioSeekLandsOnTheFrameInsideThePes)

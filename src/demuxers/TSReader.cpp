@@ -92,7 +92,10 @@ void TSReader::Reset(bool resetPackets)
   //mark invalid for Seek operations
   m_pkt.pts = PTS_UNSET;
   if (resetPackets)
+  {
     m_seekFrame.reset();
+    m_frameCopies.clear();
+  }
 }
 
 bool TSReader::StartStreaming(AP4_UI32 typeMask)
@@ -225,10 +228,36 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
   const bool hasVideo{startFrame.has_value()};
   uint64_t lastRecovery(static_cast<uint64_t>(m_startPos));
   std::optional<SeekFrame> seekFrame{startFrame}; // The frame at lastRecovery or later
+  // The stream can read again from this position. A frame of a PES that starts
+  // before is a copy, and the read after the seek starts with the copies.
+  uint64_t readStart{lastRecovery};
+  std::deque<FrameCopy> copies;
+  bool seekFrameIsCopy{false};
+  // With video, the frames of the last PES of each other stream. The PES can
+  // continue in the next segment, and then the frames are copies.
+  std::deque<FrameCopy> lastPesFrames;
+  std::deque<FrameCopy> previousPesFrames;
+  m_frameCopies.clear();
+  const auto keepCopy = [&](const TSDemux::ElementaryStream::PesStart& pes)
+  {
+    // The PES continues, so the frames of the PES that came before are copies too
+    for (auto frame{previousPesFrames.begin()}; frame != previousPesFrames.end();)
+    {
+      if (frame->pkt.pid == m_pkt.pid && frame->pesPosition == pes.position)
+      {
+        copies.push_back(std::move(*frame));
+        frame = previousPesFrames.erase(frame);
+      }
+      else
+        ++frame;
+    }
+    copies.push_back({m_pkt, {m_pkt.data, m_pkt.data + m_pkt.size}, GetSegmentStart(),
+                      pes.position});
+  };
   // The stream cannot seek back into a segment after a read of the next
   // segment. So the scan reads the frames left in the buffers at the end of a
   // segment, before the next segment.
-  uint64_t segmentEnd{0}; // The end time of the frames read
+  uint64_t segmentEnd{0}; // The end time of the frames read that set the seek position
   bool nextSegment{false};
   while (true)
   {
@@ -243,18 +272,15 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
         break;
       // The seek time is after the frames of this segment
       nextSegment = true;
-      lastRecovery = m_AVContext->GetPosition();
+      readStart = lastRecovery = m_AVContext->GetPosition();
       seekFrame = startFrame;
+      seekFrameIsCopy = false;
+      copies.clear();
+      previousPesFrames = std::move(lastPesFrames);
+      lastPesFrames.clear();
       continue;
     }
     nextSegment = false;
-    if (m_pkt.pts == PTS_UNSET)
-      continue;
-    const uint64_t pts{static_cast<uint64_t>(m_pkt.pts)};
-    segmentEnd = std::max(segmentEnd, pts + m_pkt.duration);
-    // With video, the video frames set the seek position
-    if (hasVideo && GetStreamType() != INPUTSTREAM_TYPE_VIDEO)
-      continue;
     // The demuxer emits a frame only after a later PES starts. The frame
     // starts in the PES where the frame data starts.
     const TSDemux::ElementaryStream* stream{m_AVContext->GetStream(m_pkt.pid)};
@@ -262,20 +288,75 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
                                                          : nullptr};
     if (!pes)
       continue;
+    const bool isCopy{pes->position < readStart};
+    if (isCopy)
+      keepCopy(*pes);
+    else if (hasVideo && GetStreamType() != INPUTSTREAM_TYPE_VIDEO)
+    {
+      const uint16_t pid{m_pkt.pid};
+      lastPesFrames.erase(std::remove_if(lastPesFrames.begin(), lastPesFrames.end(),
+                                         [pid, pes](const FrameCopy& frame) {
+                                           return frame.pkt.pid == pid &&
+                                                  frame.pesPosition != pes->position;
+                                         }),
+                          lastPesFrames.end());
+      lastPesFrames.push_back({m_pkt, {m_pkt.data, m_pkt.data + m_pkt.size}, GetSegmentStart(),
+                               pes->position});
+    }
+    if (m_pkt.pts == PTS_UNSET)
+      continue;
+    const uint64_t pts{static_cast<uint64_t>(m_pkt.pts)};
+    // With video, the video frames set the seek position
+    if (hasVideo && GetStreamType() != INPUTSTREAM_TYPE_VIDEO)
+      continue;
+    segmentEnd = std::max(segmentEnd, pts + m_pkt.duration);
     if (!hasVideo || m_pkt.recoveryPoint || pes->position == m_startPos)
     {
       // A preceeding seek lands on a frame at or before the seek time
       if (preceeding && pts > timeInTs)
         break;
-      lastRecovery = pes->position;
+      lastRecovery = isCopy ? readStart : pes->position;
       // An audio PES holds more than one frame
       seekFrame = SeekFrame{m_pkt.pid, pts};
+      seekFrameIsCopy = isCopy;
       if (pts >= timeInTs)
         break;
     }
     // No later key frame is at or before the seek time
     else if (preceeding && pts >= timeInTs)
       break;
+  }
+  if (lastRecovery == readStart)
+  {
+    // A stream emits the rest of a PES before readStart when the next PES of
+    // the stream starts. The read stays in the segment of readStart.
+    std::vector<uint16_t> pending;
+    for (const auto& tsInfo : m_streamInfos)
+    {
+      if (tsInfo.m_enabled)
+        pending.push_back(tsInfo.m_stream->pid);
+    }
+    m_stopAtSegmentEnd = true;
+    while (!pending.empty() && ReadPacket())
+    {
+      const TSDemux::ElementaryStream* stream{m_AVContext->GetStream(m_pkt.pid)};
+      const TSDemux::ElementaryStream::PesStart* pes{stream ? stream->GetPesStart(m_pkt.data)
+                                                           : nullptr};
+      if (!pes)
+        continue;
+      if (pes->position < readStart)
+        keepCopy(*pes);
+      else
+        pending.erase(std::remove(pending.begin(), pending.end(), m_pkt.pid), pending.end());
+    }
+    m_stopAtSegmentEnd = false;
+    // Before the first video frame of a segment, only the frames of other
+    // streams follow
+    for (FrameCopy& copy : copies)
+    {
+      if (seekFrameIsCopy || !seekFrame || copy.pkt.pid != seekFrame->pid)
+        m_frameCopies.push_back(std::move(copy));
+    }
   }
   m_AVContext->GoPosition(lastRecovery, true);
   m_seekFrame = seekFrame;
@@ -287,6 +368,15 @@ bool TSReader::ReadPacket(bool scanStreamInfo)
 {
   if (!m_AVContext)
     return false;
+
+  if (!m_frameCopies.empty())
+  {
+    m_frameCopy = std::move(m_frameCopies.front());
+    m_frameCopies.pop_front();
+    m_pkt = m_frameCopy->pkt;
+    m_pkt.data = m_frameCopy->data.data();
+    return true;
+  }
 
   bool ret(false);
 
@@ -418,6 +508,8 @@ void TSReader::MarkSegmentStart(uint64_t offset)
 
 std::optional<TSReader::SegmentStart> TSReader::GetSegmentStart() const
 {
+  if (m_frameCopy && m_pkt.data == m_frameCopy->data.data())
+    return m_frameCopy->segmentStart;
   const TSDemux::ElementaryStream* stream{m_AVContext->GetStream(m_pkt.pid)};
   const TSDemux::ElementaryStream::PesStart* pes{stream ? stream->GetPesStart(m_pkt.data)
                                                        : nullptr};

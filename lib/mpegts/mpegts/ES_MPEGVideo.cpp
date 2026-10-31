@@ -89,6 +89,7 @@ void ES_MPEG2Video::Parse(STREAM_PKT *pkt)
   {
     frameComplete = true;
     es_consumed = es_len;
+    es_skip_to_pts = true;
   }
 
   if (frameComplete)

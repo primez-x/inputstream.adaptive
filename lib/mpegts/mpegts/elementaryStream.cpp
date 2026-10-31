@@ -33,6 +33,7 @@ ElementaryStream::ElementaryStream(uint16_t pes_pid)
   , es_pts_pointer(0)
   , es_parsed(0)
   , es_end_of_data(false)
+  , es_skip_to_pts(false)
   , es_pes_start_pending(false)
   , es_pes_start_position(0)
   , es_pes_start_segment(0)
@@ -58,6 +59,7 @@ void ElementaryStream::Reset(void)
   ClearBuffer();
   es_found_frame = false;
   es_frame_valid = false;
+  es_skip_to_pts = false;
 }
 
 void ElementaryStream::ClearBuffer()
@@ -100,6 +102,18 @@ void ElementaryStream::ShiftPesStarts(size_t consumed)
 
 int ElementaryStream::Append(const unsigned char* buf, size_t len, bool new_pts)
 {
+  // A seek scan reads on after the end of a segment. The rest of a frame that
+  // the end of the segment completed is not the start of the next frame.
+  if (es_skip_to_pts)
+  {
+    if (!new_pts)
+    {
+      es_pes_start_pending = false;
+      return 0;
+    }
+    es_skip_to_pts = false;
+  }
+
   // Mark position where current pts become applicable
   if (new_pts)
     es_pts_pointer = es_len;

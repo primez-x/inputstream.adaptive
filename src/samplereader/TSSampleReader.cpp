@@ -80,8 +80,9 @@ AP4_Result CTSSampleReader::ReadSample()
 
   if (m_seekTime)
   {
-    // The seek continues from the start of the next segment
-    TSReader::Reset();
+    // The seek continues from the start of the next segment. The parsers keep
+    // the PES that continues from the segment before.
+    TSReader::Reset(false);
     if (!Seek(*m_seekTime))
       return EndOfData();
   }
