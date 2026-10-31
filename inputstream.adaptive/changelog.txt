@@ -32,6 +32,7 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix the timing offset of a TS audio segment whose first PES has no PTS, which was off by the frames before the first PTS, and the timestamps of TS audio frames across the 33 bit PTS wrap before the first PTS and inside a PES
 - Fix the segment times of HLS streams with EXTINF durations finer than 1 ms, which drifted from the media time (0.24 s after one hour of a YouTube stream), so a seek near a segment start could continue at the next segment
 - Fix the period ends of a live DASH stream with more than one period and a SegmentList, or a SegmentTimeline with a presentationTimeOffset, which waited for segments after a complete period, or continued at the next period before the period was complete
+- Fix a forward seek in a TS video stream, which continued at the next segment instead of at the next key frame, and ended the playback in the last segment
 
 v21.5.25-p3i.3 (2026-10-30)
 - Fix a seek in a live HLS stream that ended the audio when the next audio segment was not available yet

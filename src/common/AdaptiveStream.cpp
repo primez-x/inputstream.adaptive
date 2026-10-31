@@ -1265,8 +1265,11 @@ bool AdaptiveStream::seek_time(double seek_seconds, bool preceeding, bool& needR
   if (choosen_seg < current_rep_->expired_segments_)
     choosen_seg = current_rep_->expired_segments_;
 
+  // The TS reader finds the key frame at or after the seek time, also in the next
+  // segments. The other readers seek inside one segment.
   if (!preceeding && sec_in_ts > current_rep_->Timeline().Get(choosen_seg)->startPTS_ &&
-      current_adp_->GetStreamType() == StreamType::VIDEO)
+      current_adp_->GetStreamType() == StreamType::VIDEO &&
+      current_rep_->GetContainerType() != ContainerType::TS)
   {
     //Assume that we have I-Frames only at segment start
     ++choosen_seg;

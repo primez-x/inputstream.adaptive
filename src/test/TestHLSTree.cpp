@@ -501,3 +501,65 @@ TEST_F(HLSTreeTest, LastSegmentOfEachPeriod)
     }
   }
 }
+
+TEST_F(HLSTreeTest, SeekSegmentOfAForwardVideoSeek)
+{
+  // Five segments of 6 s with key frames inside the segments. The TS reader
+  // finds the key frame at or after the seek time in the segment of the seek
+  // time, and in the segments after. Other readers seek inside one segment, so
+  // a forward seek after a segment start continues at the next segment.
+  for (const bool ts : {true, false})
+  {
+    SCOPED_TRACE(testing::Message() << "TS=" << ts);
+    CSrvBroker::GetInstance()->Init(m_kodiProps);
+    ChildManifestTree hls;
+    hls.Configure(m_reprChooser, {}, "");
+    ASSERT_TRUE(hls.Open("http://foo.bar/master.m3u8", {},
+                         "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS=\"avc1.4d401f\"\n"
+                         "video.m3u8\n"));
+    auto period = hls.m_periods[0].get();
+    // The master playlist adds an adaptation set for the audio in the variant
+    PLAYLIST::CAdaptationSet* adp{nullptr};
+    for (const auto& adpSet : period->GetAdaptationSets())
+    {
+      if (adpSet->GetStreamType() == PLAYLIST::StreamType::VIDEO)
+        adp = adpSet.get();
+    }
+    ASSERT_TRUE(adp);
+    auto rep = adp->GetRepresentations()[0].get();
+    std::string media{"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n"
+                      "#EXT-X-PLAYLIST-TYPE:VOD\n"};
+    if (!ts)
+      media += "#EXT-X-MAP:URI=\"init.mp4\"\n";
+    for (int segment = 0; segment < 5; ++segment)
+      media += "#EXTINF:6,\nseg" + std::to_string(segment) + (ts ? ".ts\n" : ".m4s\n");
+    media += "#EXT-X-ENDLIST\n";
+    ASSERT_EQ(hls.ParseChildManifest(media, "http://foo.bar/video.m3u8", period, adp, rep),
+              adaptive::CHLSTree::ParseStatus::SUCCESS);
+    ASSERT_EQ(rep->GetContainerType(), ts ? PLAYLIST::ContainerType::TS
+                                          : PLAYLIST::ContainerType::MP4);
+    TestAdaptiveStream stream{&hls, adp, rep};
+    ASSERT_TRUE(stream.start_stream());
+    for (const double seconds : {0.0, 3.0, 6.0, 11.9, 28.2})
+    {
+      for (const bool preceeding : {true, false})
+      {
+        SCOPED_TRACE(testing::Message() << "seek=" << seconds << " preceeding=" << preceeding);
+        // The segment of the seek time, or the segment after
+        const int segment{static_cast<int>(seconds / 6)};
+        const bool next{!ts && !preceeding && seconds > segment * 6};
+        bool reset{false};
+        if (next && segment == 4)
+        {
+          EXPECT_FALSE(stream.seek_time(seconds, preceeding, reset));
+          continue;
+        }
+        ASSERT_TRUE(stream.seek_time(seconds, preceeding, reset));
+        EXPECT_TRUE(reset);
+        EXPECT_EQ(rep->GetNextSegment(), rep->Timeline().Get(segment + (next ? 1 : 0)));
+      }
+    }
+    stream.Stop();
+    hls.Uninitialize();
+  }
+}
