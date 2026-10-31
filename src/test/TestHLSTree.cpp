@@ -563,3 +563,56 @@ TEST_F(HLSTreeTest, SeekSegmentOfAForwardVideoSeek)
     hls.Uninitialize();
   }
 }
+
+TEST_F(HLSTreeTest, SeekSegmentAtASegmentStart)
+{
+  // Segments of 1.001 s. For some segment starts, the seek time in seconds
+  // times the timescale is a bit less than the start, for example
+  // 1000.9999999999999 for 1.001 s. A seek to a segment start chooses that
+  // segment.
+  for (const bool ts : {true, false})
+  {
+    SCOPED_TRACE(testing::Message() << "TS=" << ts);
+    CSrvBroker::GetInstance()->Init(m_kodiProps);
+    ChildManifestTree hls;
+    hls.Configure(m_reprChooser, {}, "");
+    ASSERT_TRUE(hls.Open("http://foo.bar/master.m3u8", {},
+                         "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS=\"avc1.4d401f\"\n"
+                         "video.m3u8\n"));
+    auto period = hls.m_periods[0].get();
+    PLAYLIST::CAdaptationSet* adp{nullptr};
+    for (const auto& adpSet : period->GetAdaptationSets())
+    {
+      if (adpSet->GetStreamType() == PLAYLIST::StreamType::VIDEO)
+        adp = adpSet.get();
+    }
+    ASSERT_TRUE(adp);
+    auto rep = adp->GetRepresentations()[0].get();
+    std::string media{"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n"
+                      "#EXT-X-PLAYLIST-TYPE:VOD\n"};
+    if (!ts)
+      media += "#EXT-X-MAP:URI=\"init.mp4\"\n";
+    for (int segment = 0; segment < 30; ++segment)
+      media += "#EXTINF:1.001,\nseg" + std::to_string(segment) + (ts ? ".ts\n" : ".m4s\n");
+    media += "#EXT-X-ENDLIST\n";
+    ASSERT_EQ(hls.ParseChildManifest(media, "http://foo.bar/video.m3u8", period, adp, rep),
+              adaptive::CHLSTree::ParseStatus::SUCCESS);
+    TestAdaptiveStream stream{&hls, adp, rep};
+    ASSERT_TRUE(stream.start_stream());
+    for (int segment = 1; segment < 30; ++segment)
+    {
+      ASSERT_EQ(rep->Timeline().Get(segment)->startPTS_, segment * uint64_t{1001});
+      for (const bool preceeding : {true, false})
+      {
+        // The session passes microseconds in seconds
+        const double seconds{static_cast<double>(segment * 1001000) / 1000000};
+        SCOPED_TRACE(testing::Message() << "seek=" << seconds << " preceeding=" << preceeding);
+        bool reset{false};
+        ASSERT_TRUE(stream.seek_time(seconds, preceeding, reset));
+        EXPECT_EQ(rep->GetNextSegment(), rep->Timeline().Get(segment));
+      }
+    }
+    stream.Stop();
+    hls.Uninitialize();
+  }
+}

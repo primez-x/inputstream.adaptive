@@ -1232,7 +1232,12 @@ bool AdaptiveStream::seek_time(double seek_seconds, bool preceeding, bool& needR
 
   std::lock_guard<adaptive::AdaptiveTree::TreeUpdateThread> lckUpdTree(m_tree->GetTreeUpdMutex());
 
-  uint64_t sec_in_ts = static_cast<uint64_t>(seek_seconds * current_rep_->GetTimescale());
+  // The seek time has microseconds. Seconds times the timescale can be a bit
+  // less than a segment start, and the seek then chose the segment before.
+  const uint64_t seekUs{static_cast<uint64_t>(std::llround(seek_seconds * STREAM_TIME_BASE))};
+  const uint64_t timescale{current_rep_->GetTimescale()};
+  const uint64_t sec_in_ts{seekUs / STREAM_TIME_BASE * timescale +
+                           seekUs % STREAM_TIME_BASE * timescale / STREAM_TIME_BASE};
 
   //Skip initialization
   size_t choosen_seg{0};
