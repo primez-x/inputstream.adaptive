@@ -24,15 +24,6 @@ using namespace UTILS;
 
 namespace
 {
-constexpr size_t MAX_SEGMENTS{8};
-
-// A PTS has 33 bits, and the PTS after PTS_MASK is 0
-bool IsPtsBefore(uint64_t pts, uint64_t other)
-{
-  const uint64_t distance{(other - pts) & PTS_MASK};
-  return distance != 0 && distance <= PTS_MASK / 2;
-}
-
 void DebugLog(int level, char* msg)
 {
   if (msg[std::strlen(msg) - 1] == '\n')
@@ -666,7 +657,13 @@ bool TSReader::HasVideo() const
   return false;
 }
 
-void TSReader::MarkSegmentStart(uint64_t offset, std::optional<uint32_t> oldestUsed)
+bool TSReader::IsPtsBefore(uint64_t pts, uint64_t other)
+{
+  const uint64_t distance{(other - pts) & PTS_MASK};
+  return distance != 0 && distance <= PTS_MASK / 2;
+}
+
+void TSReader::MarkSegmentStart(uint64_t offset, std::set<uint32_t> used)
 {
   if (!m_segments.back().offset)
   {
@@ -674,9 +671,18 @@ void TSReader::MarkSegmentStart(uint64_t offset, std::optional<uint32_t> oldestU
     return;
   }
   m_segments.push_back({++m_segment, offset, {}});
-  while (m_segments.size() > MAX_SEGMENTS &&
-         (!oldestUsed || m_segments.front().number < *oldestUsed))
-    m_segments.pop_front();
+  // A frame takes the PTS of the segment where the PES of the frame starts.
+  // Only the frames of the PES in the buffers can still come, and the new
+  // segment.
+  if (m_AVContext)
+  {
+    for (const TSDemux::ElementaryStream* stream : m_AVContext->GetStreams())
+      stream->AddPesSegments(used);
+  }
+  const auto last{std::prev(m_segments.end())};
+  m_segments.erase(std::remove_if(m_segments.begin(), last,
+                                  [&used](const Segment& s) { return !used.count(s.number); }),
+                   last);
   // The PES packets that start from now on are in the new segment
   if (m_AVContext)
     m_AVContext->SetSegment(m_segment);

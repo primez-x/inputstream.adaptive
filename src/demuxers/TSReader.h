@@ -13,6 +13,7 @@
 #include <deque>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdint.h>
 #include <utility>
 #include <vector>
@@ -50,10 +51,10 @@ public:
    *        offset of the first segment after Initialize() reads the stream
    *        information, so the first offset is the offset of that segment.
    * \param offset The PTS offset of the segment
-   * \param oldestUsed The oldest segment that a frame still needs, as a held
-   *        audio frame for the PTS diff of the frame
+   * \param used The segments that frames outside the buffers still need, as
+   *        held audio frames for the PTS diff
    */
-  void MarkSegmentStart(uint64_t offset, std::optional<uint32_t> oldestUsed);
+  void MarkSegmentStart(uint64_t offset, std::set<uint32_t> used);
   struct SegmentStart
   {
     uint64_t pts; // PTS of the first frame of the segment, of the video if the video is enabled
@@ -69,6 +70,10 @@ public:
    */
   std::optional<SegmentStart> GetSegmentStart() const;
   std::optional<SegmentStart> GetSegmentStart(uint32_t segment) const;
+  /*!
+   * \brief True if a PTS of 33 bits comes before the other PTS, across the wrap
+   */
+  static bool IsPtsBefore(uint64_t pts, uint64_t other);
   /*!
    * \brief The segment of the PES where the current packet starts. Nothing for
    *        a copy of a frame.

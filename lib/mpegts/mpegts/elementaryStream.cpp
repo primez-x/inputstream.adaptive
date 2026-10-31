@@ -97,6 +97,12 @@ void ElementaryStream::StartPes(uint64_t position, uint32_t segment)
   es_pes_start_segment = segment;
 }
 
+void ElementaryStream::AddPesSegments(std::set<uint32_t>& segments) const
+{
+  for (const PesStart& pes : es_pes_starts)
+    segments.insert(pes.segment);
+}
+
 const ElementaryStream::PesStart* ElementaryStream::GetPesStart(const unsigned char* data) const
 {
   if (!es_buf || data < es_buf)

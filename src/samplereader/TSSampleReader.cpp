@@ -99,6 +99,9 @@ AP4_Result CTSSampleReader::ReadSample()
     // the first PTS of the stream, the frames wait for the next PTS.
     if (GetStreamType() == INPUTSTREAM_TYPE_AUDIO && (GetPts() == PTS_UNSET || !m_untimed.empty()))
     {
+      // The time of the other streams counts from the first held frame on
+      if (m_untimed.empty())
+        m_untimedSince.reset();
       m_untimed.push_back(PacketSample());
       if (GetPts() != PTS_UNSET)
         ReleaseUntimed(GetPts());
@@ -107,6 +110,21 @@ AP4_Result CTSSampleReader::ReadSample()
       if (m_samples.empty() || GetSeekFramePts())
         continue;
       return NextSample();
+    }
+    // Without more audio, the time of the other streams limits the wait
+    if (!m_untimed.empty() && GetDts() != PTS_UNSET)
+    {
+      const uint64_t dts{static_cast<uint64_t>(GetDts())};
+      if (!m_untimedSince)
+        m_untimedSince = dts;
+      else if (IsPtsBefore((*m_untimedSince + MAX_UNTIMED_DURATION) & PTS_MASK, dts))
+      {
+        ReleaseUntimed(PTS_UNSET);
+        m_samples.push_back(PacketSample());
+        if (GetSeekFramePts())
+          continue;
+        return NextSample();
+      }
     }
     if (GetSeekFramePts())
     {
@@ -205,13 +223,13 @@ void CTSSampleReader::SetPTSOffset(uint64_t offset)
   // change, the next samples are still from the previous segment, and each
   // sample takes the diff of the segment of the sample. The held frames take
   // the diff when the next PTS comes.
-  std::optional<uint32_t> oldestHeld;
+  std::set<uint32_t> held;
   for (const Sample& sample : m_untimed)
   {
-    if (sample.segment && (!oldestHeld || *sample.segment < *oldestHeld))
-      oldestHeld = sample.segment;
+    if (sample.segment)
+      held.insert(*sample.segment);
   }
-  MarkSegmentStart(offset, oldestHeld);
+  MarkSegmentStart(offset, std::move(held));
 }
 
 void CTSSampleReader::Reset(bool bEOS)

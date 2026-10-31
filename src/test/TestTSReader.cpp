@@ -95,9 +95,9 @@ std::vector<uint8_t> AacFrame(int index)
 // An E-AC-3 frame of 128 bytes: independent (0) or dependent (1), 48 kHz,
 // 2 channels, bsid 16, with 1, 2, 3 or 6 blocks (blocksCode 0 to 3). The last
 // two bytes hold the index.
-std::vector<uint8_t> Eac3Frame(int frameType, int blocksCode = 3, int index = 0)
+std::vector<uint8_t> Eac3Frame(int frameType, int blocksCode = 3, int index = 0,
+                               unsigned int words = 64)
 {
-  constexpr unsigned int words{64};
   std::vector<uint8_t> frame{0x0B,
                              0x77,
                              static_cast<uint8_t>((frameType << 6) | ((words - 1) >> 8)),
@@ -2627,6 +2627,130 @@ TEST_F(TSSampleReaderTest, ASeekTakesTheClockFromTheLastAudioFrameOfTheStream)
     EXPECT_EQ(FrameIndex(), target);
     EXPECT_EQ(m_reader->PTS(), Time(BASE_PTS + target * EAC3_TICKS));
   }
+}
+
+// Audio frames without a PTS wait for the next PTS of the audio for at most
+// 1 s of the stream. Without more audio, the time of the video counts.
+TEST_F(TSSampleReaderTest, HeldAudioComesWithoutPtsAfterOneSecondOfVideo)
+{
+  TSWriter writer;
+  writer.WriteTables(true);
+  for (int a = 0; a < 3; ++a)
+    writer.WriteAudioFrame(a, false);
+  writer.WriteVideo(0, 40);
+  // Frame 2 waits again
+  writer.WriteAudioFrame(3, false);
+  writer.WriteVideo(40, 40);
+  Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+  m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+  std::vector<std::pair<AP4_UI32, uint64_t>> read;
+  bool started{false};
+  for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+       result = m_reader->ReadSample())
+    read.emplace_back(m_reader->GetStreamId(), m_reader->PTS());
+  // The DTS of video frame 24 is more than 1 s after the DTS of frame 0. The
+  // last audio PES waits in the buffer for the next audio PES.
+  std::vector<std::pair<AP4_UI32, uint64_t>> expected;
+  for (int v = 0; v < 24; ++v)
+    expected.emplace_back(VIDEO_ID, Time(VideoPts(v)));
+  for (int a = 0; a < 2; ++a)
+    expected.emplace_back(AUDIO_ID, STREAM_NOPTS_VALUE);
+  // The parser reads frame 2 when the PES of frame 3 starts. The next video
+  // frame that the reader returns is frame 38, and frame 62 is 1 s later.
+  for (int v = 24; v < 62; ++v)
+    expected.emplace_back(VIDEO_ID, Time(VideoPts(v)));
+  expected.emplace_back(AUDIO_ID, STREAM_NOPTS_VALUE);
+  for (int v = 62; v < 80; ++v)
+    expected.emplace_back(VIDEO_ID, Time(VideoPts(v)));
+  // Frame 3 comes at the end of the stream
+  expected.emplace_back(AUDIO_ID, STREAM_NOPTS_VALUE);
+  EXPECT_EQ(read, expected);
+}
+
+// The reader keeps the PTS of a segment while a frame of that segment can
+// still come: a held audio frame, or a frame of a PES in the buffers. The
+// reader drops the other segments.
+TEST_F(TSSampleReaderTest, TheReaderKeepsOnlyTheSegmentsOfFramesThatCanStillCome)
+{
+  TSWriter writer;
+  for (int s = 0; s < 40; ++s)
+  {
+    writer.WriteTables(true);
+    if (s == 0)
+    {
+      for (int a = 0; a < 3; ++a)
+        writer.WriteAudioFrame(a, false);
+    }
+    writer.WriteVideo(s * 5, 5);
+    const uint64_t start{Time(VideoPts(s * 5)) - DIFF};
+    if (s == 0)
+      Open(writer.Take(), start, INPUTSTREAM_TYPE_VIDEO);
+    else
+      AppendSegment(writer.Take(), start);
+  }
+  m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+  bool started{false};
+  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+  // The held audio of segment 0 waits up to video frame 24, in segment 4
+  for (int read = 1; read < 20; ++read)
+    ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+  EXPECT_TRUE(m_reader->GetSegmentStart(0).has_value());
+  for (uint32_t segment = 1; segment < 3; ++segment)
+    EXPECT_FALSE(m_reader->GetSegmentStart(segment).has_value()) << segment;
+  while (m_reader->GetStreamId() != AUDIO_ID)
+    ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+  for (int read = 0; read < 20; ++read)
+    ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+  std::vector<uint32_t> kept;
+  for (uint32_t segment = 0; segment < 40; ++segment)
+  {
+    if (m_reader->GetSegmentStart(segment))
+      kept.push_back(segment);
+  }
+  // The last audio PES of segment 0 waits in the buffer for the next audio
+  // PES, the video PES of segment 7 for the next video PES
+  EXPECT_EQ(kept, (std::vector<uint32_t>{0, 7, 8}));
+}
+
+// A PES can span more segments than a reader keeps for the buffers. The frame
+// of that PES takes the PTS diff of the segment where the PES starts.
+TEST_F(TSSampleReaderTest, AFrameOfAPesAcrossManySegmentsHasTheDiffOfItsSegment)
+{
+  TSWriter writer{H264, EAC3_71};
+  writer.WriteTables(false);
+  for (int unit = 0; unit < 3; ++unit)
+    writer.WriteAudioPes(BASE_PTS + unit * EAC3_TICKS, Eac3AccessUnit(unit));
+  Open(writer.Take(), Time(BASE_PTS) - SegmentDiff(0), INPUTSTREAM_TYPE_AUDIO);
+  // An access unit of 4224 bytes in 23 TS packets, each in a separate segment
+  std::vector<uint8_t> unit{Eac3Frame(0, 3, 3)};
+  const std::vector<uint8_t> dependent{Eac3Frame(1, 3, 3, 2048)};
+  unit.insert(unit.end(), dependent.begin(), dependent.end());
+  writer.WriteAudioPes(BASE_PTS + 3 * EAC3_TICKS, unit);
+  const std::vector<uint8_t> pes{writer.Take()};
+  int segment{1};
+  for (size_t pos = 0; pos < pes.size(); pos += 188, ++segment)
+  {
+    writer.WriteTables(false);
+    std::vector<uint8_t> data{writer.Take()};
+    data.insert(data.end(), pes.begin() + pos, pes.begin() + pos + 188);
+    if (pos + 188 == pes.size())
+    {
+      for (int next = 4; next < 7; ++next)
+        writer.WriteAudioPes(BASE_PTS + next * EAC3_TICKS, Eac3AccessUnit(next));
+      const std::vector<uint8_t> units{writer.Take()};
+      data.insert(data.end(), units.begin(), units.end());
+    }
+    AppendSegment(data, Time(BASE_PTS + 3 * EAC3_TICKS) + (segment - 1) * 1000 - SegmentDiff(segment));
+  }
+  std::vector<std::tuple<int, AP4_Size, uint64_t, int64_t>> read;
+  bool started{false};
+  for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+       result = m_reader->ReadSample())
+    read.emplace_back(FrameIndex(), m_reader->GetSampleDataSize(), m_reader->PTS(),
+                      m_reader->GetPTSDiff());
+  ASSERT_EQ(read.size(), 7U);
+  EXPECT_EQ(read[3], std::make_tuple(3, AP4_Size{4224}, Time(BASE_PTS + 3 * EAC3_TICKS),
+                                     SegmentDiff(1)));
 }
 
 // A seek drops the audio frames that came with the first PTS and still wait

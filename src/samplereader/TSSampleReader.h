@@ -104,10 +104,11 @@ private:
   // frame follow the frame.
   std::deque<Sample> m_samples;
   // The audio frames before the first PTS of the stream wait for that PTS. A
-  // stream needs a PTS every 0.7 s, frames without a PTS for longer come
-  // without a PTS.
+  // stream needs a PTS every 0.7 s, frames without a PTS for more than 1 s of
+  // the audio or of the other streams come without a PTS.
   static constexpr uint64_t MAX_UNTIMED_DURATION{90000};
   std::deque<Sample> m_untimed;
+  std::optional<uint64_t> m_untimedSince; // The first DTS of another stream while frames wait
   std::optional<Sample> m_sample; // The current sample, from m_samples
   CAdaptiveByteStream* m_adByteStream;
 };
