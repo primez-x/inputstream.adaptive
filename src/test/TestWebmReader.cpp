@@ -79,12 +79,12 @@ std::vector<uint8_t> Initialization()
 }
 
 // One cluster per media segment. The last two bytes of each frame hold the frame index.
-std::vector<uint8_t> Cluster(int cluster)
+std::vector<uint8_t> Cluster(int cluster, int frames = CLUSTER_FRAMES)
 {
-  std::vector<uint8_t> body{UInt({0xE7}, BASE_MS + cluster * CLUSTER_FRAMES * FRAME_MS)};
-  for (int i = 0; i < CLUSTER_FRAMES; ++i)
+  std::vector<uint8_t> body{UInt({0xE7}, BASE_MS + cluster * frames * FRAME_MS)};
+  for (int i = 0; i < frames; ++i)
   {
-    const int frame{cluster * CLUSTER_FRAMES + i};
+    const int frame{cluster * frames + i};
     const uint64_t timecode{i * FRAME_MS};
     std::vector<uint8_t> block{0x81, static_cast<uint8_t>(timecode >> 8),
                                static_cast<uint8_t>(timecode), 0x80};
@@ -153,6 +153,28 @@ TEST_F(WebmSampleReaderTest, PtsDiffChangesWithTheFirstFrameOfASegment)
     EXPECT_EQ(FrameIndex(), i);
     EXPECT_EQ(m_reader->PTS(), FrameTime(i));
     EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(i / CLUSTER_FRAMES));
+  }
+  EXPECT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
+}
+
+// With one frame per segment, the read of the next block header switches to
+// the segment after the next frame before that frame is a sample.
+TEST_F(WebmSampleReaderTest, PtsDiffOfSegmentsWithOneFrame)
+{
+  Open();
+  for (int c = 0; c < CLUSTERS; ++c)
+    AppendSegment(Cluster(c, 1), FrameTime(c) - SegmentDiff(c));
+
+  bool started{false};
+  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+  for (int i = 0; i < CLUSTERS; ++i)
+  {
+    SCOPED_TRACE(i);
+    if (i > 0)
+      ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+    EXPECT_EQ(FrameIndex(), i);
+    EXPECT_EQ(m_reader->PTS(), FrameTime(i));
+    EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(i));
   }
   EXPECT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
 }

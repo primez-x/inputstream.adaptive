@@ -255,8 +255,14 @@ webm::Status WebmReader::OnSimpleBlockBegin(const webm::ElementMetadata& metadat
   }
 
   m_pts = m_ptsOffset + simple_block.timecode;
-  if (!m_segmentPts)
-    m_segmentPts = m_pts;
+  // The read of the next block header can mark the next segment before this
+  // frame is a sample, so the frame keeps the offset of its own segment
+  m_segmentStart.reset();
+  if (m_segmentOffset)
+  {
+    m_segmentStart = {m_pts, *m_segmentOffset};
+    m_segmentOffset.reset();
+  }
   *action = webm::Action::kRead;
   return webm::Status(webm::Status::kOkCompleted);
 }

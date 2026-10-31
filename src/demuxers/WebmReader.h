@@ -47,15 +47,19 @@ public:
   bool GetInformation(kodi::addon::InputstreamInfo& info);
   bool ReadPacket();
 
+  struct SegmentStart
+  {
+    uint64_t pts; // PTS of the first frame of the segment
+    uint64_t offset; // Offset of MarkSegmentStart()
+  };
   /*!
-   * \brief Wait for the PTS of the first frame of a new segment.
+   * \brief The next frame read starts a segment with the offset.
    */
-  void MarkSegmentStart() { m_segmentPts.reset(); }
+  void MarkSegmentStart(uint64_t offset) { m_segmentOffset = offset; }
   /*!
-   * \brief The PTS of the first frame read after MarkSegmentStart().
-   * \return The PTS, or nothing while the frame is not read yet
+   * \brief The segment start of the frame read, if the frame starts a segment.
    */
-  std::optional<uint64_t> GetSegmentPts() const { return m_segmentPts; }
+  std::optional<SegmentStart> GetSegmentStart() const { return m_segmentStart; }
 
   webm::Status OnSegmentBegin(const webm::ElementMetadata& metadata, webm::Action* action) override;
 
@@ -80,7 +84,8 @@ private:
   bool m_needFrame = false;
   uint64_t m_pts = STREAM_NOPTS_VALUE;
   uint64_t m_ptsOffset = 0;
-  std::optional<uint64_t> m_segmentPts;
+  std::optional<uint64_t> m_segmentOffset;
+  std::optional<SegmentStart> m_segmentStart;
   uint64_t m_duration = 0;
   std::vector<CUEPOINT> *m_cuePoints = nullptr;
   AP4_DataBuffer m_frameBuffer, m_codecPrivate;
