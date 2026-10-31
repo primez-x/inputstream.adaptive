@@ -101,7 +101,7 @@ AP4_Result CTSSampleReader::ReadSample()
     {
       // The time of the other streams counts from the first held frame on
       if (m_untimed.empty())
-        m_untimedSince.reset();
+        m_untimedSince.clear();
       m_untimed.push_back(PacketSample());
       if (GetPts() != PTS_UNSET)
         ReleaseUntimed(GetPts());
@@ -111,13 +111,13 @@ AP4_Result CTSSampleReader::ReadSample()
         continue;
       return NextSample();
     }
-    // Without more audio, the time of the other streams limits the wait
+    // Without more audio, the time of the other streams limits the wait. Each
+    // stream has a separate clock.
     if (!m_untimed.empty() && GetDts() != PTS_UNSET)
     {
       const uint64_t dts{static_cast<uint64_t>(GetDts())};
-      if (!m_untimedSince)
-        m_untimedSince = dts;
-      else if (IsPtsBefore((*m_untimedSince + MAX_UNTIMED_DURATION) & PTS_MASK, dts))
+      const auto [since, first]{m_untimedSince.try_emplace(GetPid(), dts)};
+      if (!first && IsPtsBefore((since->second + MAX_UNTIMED_DURATION) & PTS_MASK, dts))
       {
         ReleaseUntimed(PTS_UNSET);
         m_samples.push_back(PacketSample());

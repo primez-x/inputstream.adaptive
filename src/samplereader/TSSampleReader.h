@@ -10,6 +10,7 @@
 #include "demuxers/TSReader.h"
 
 #include <deque>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -108,7 +109,7 @@ private:
   // the audio or of the other streams come without a PTS.
   static constexpr uint64_t MAX_UNTIMED_DURATION{90000};
   std::deque<Sample> m_untimed;
-  std::optional<uint64_t> m_untimedSince; // The first DTS of another stream while frames wait
+  std::map<uint16_t, uint64_t> m_untimedSince; // The first DTS of each other stream while frames wait
   std::optional<Sample> m_sample; // The current sample, from m_samples
   CAdaptiveByteStream* m_adByteStream;
 };

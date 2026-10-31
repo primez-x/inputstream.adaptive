@@ -2667,6 +2667,118 @@ TEST_F(TSSampleReaderTest, HeldAudioComesWithoutPtsAfterOneSecondOfVideo)
   EXPECT_EQ(read, expected);
 }
 
+// A segment can end inside the header of the next PES. The frames of that
+// PES take the PTS diff of that segment.
+TEST_F(TSSampleReaderTest, APesHeaderAtTheEndOfASegmentKeepsTheDiffOfThatSegment)
+{
+  for (const AudioCodec* codec : {&AAC, &EAC3_71})
+  for (const size_t headerBytes : {size_t{1}, size_t{9}, size_t{13}, size_t{14}})
+  {
+    SCOPED_TRACE(testing::Message() << (codec == &AAC ? "AAC, " : "7.1 E-AC-3, ") << headerBytes
+                                    << " bytes of the PES header");
+    TSWriter writer{H264, *codec};
+    writer.WriteTables(false);
+    for (int a = 0; a < 3; ++a)
+      writer.WriteAudioPes(BASE_PTS + a * codec->ticks, codec->frame(a));
+    Open(writer.Take(), Time(BASE_PTS) - SegmentDiff(0), INPUTSTREAM_TYPE_AUDIO);
+    // Segment 1 holds only the first bytes of the PES of frame 3
+    writer.WriteTables(false);
+    std::vector<uint8_t> first{writer.Take()};
+    writer.WriteAudioPes(BASE_PTS + 3 * codec->ticks, codec->frame(3), headerBytes);
+    const std::vector<uint8_t> pes{writer.Take()};
+    first.insert(first.end(), pes.begin(), pes.begin() + 188);
+    AppendSegment(first, Time(BASE_PTS + 3 * codec->ticks) - SegmentDiff(1));
+    writer.WriteTables(false);
+    std::vector<uint8_t> second{writer.Take()};
+    second.insert(second.end(), pes.begin() + 188, pes.end());
+    for (int a = 4; a < 7; ++a)
+      writer.WriteAudioPes(BASE_PTS + a * codec->ticks, codec->frame(a));
+    const std::vector<uint8_t> rest{writer.Take()};
+    second.insert(second.end(), rest.begin(), rest.end());
+    AppendSegment(second, Time(BASE_PTS + 4 * codec->ticks) - SegmentDiff(2));
+    std::vector<std::tuple<int, uint64_t, int64_t>> read;
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample())
+      read.emplace_back(FrameIndex(), m_reader->PTS(), m_reader->GetPTSDiff());
+    std::vector<std::tuple<int, uint64_t, int64_t>> expected;
+    for (int a = 0; a < 7; ++a)
+      expected.emplace_back(a, Time(BASE_PTS + a * codec->ticks),
+                            SegmentDiff(a < 3 ? 0 : a == 3 ? 1 : 2));
+    EXPECT_EQ(read, expected);
+  }
+}
+
+// Each other stream measures the time of held audio with a separate clock:
+// a subtitle PTS 0.5 s after the video does not delay the release.
+TEST_F(TSSampleReaderTest, HeldAudioCountsTheTimeOfEachOtherStreamApart)
+{
+  constexpr uint16_t SUBTITLE_PID{0x102};
+  const auto tsPacket = [](uint16_t pid, uint8_t counter, const std::vector<uint8_t>& payload)
+  {
+    // A PES start, the payload after adaptation field stuffing
+    std::vector<uint8_t> packet(188, 0xFF);
+    packet[0] = 0x47;
+    packet[1] = static_cast<uint8_t>(0x40 | (pid >> 8));
+    packet[2] = static_cast<uint8_t>(pid);
+    packet[3] = static_cast<uint8_t>(0x30 | counter);
+    packet[4] = static_cast<uint8_t>(183 - payload.size());
+    packet[5] = 0;
+    std::copy(payload.begin(), payload.end(), packet.end() - payload.size());
+    return packet;
+  };
+  TSWriter writer;
+  writer.WriteTables(true);
+  std::vector<uint8_t> data{writer.Take()};
+  // The PMT with a DVB subtitle stream
+  uint8_t* table{data.data() + 188};
+  const uint8_t* section{table + 4 + 1 + table[4] + 1};
+  const size_t length{3U + ((section[1] & 0xF) << 8) + section[2]};
+  std::vector<uint8_t> pmt(section, section + length - 4);
+  pmt.insert(pmt.end(), {0x06, 0xE1, 0x02, 0xF0, 0x0A, 0x59, 0x08, 'e', 'n', 'g', 0x10, 0, 1, 0, 1});
+  pmt[2] += 15;
+  const uint32_t crc{Crc32(pmt)};
+  for (int shift = 24; shift >= 0; shift -= 8)
+    pmt.push_back(static_cast<uint8_t>(crc >> shift));
+  pmt.insert(pmt.begin(), 0);
+  const std::vector<uint8_t> pmtPacket{tsPacket(PMT_PID, 0, pmt)};
+  std::copy(pmtPacket.begin(), pmtPacket.end(), data.begin() + 188);
+  for (int a = 0; a < 3; ++a)
+    writer.WriteAudioFrame(a, false);
+  const std::vector<uint8_t> audio{writer.Take()};
+  data.insert(data.end(), audio.begin(), audio.end());
+  for (uint8_t n = 0; n < 2; ++n)
+  {
+    const uint64_t pts{VideoPts(0) + 45000 + n * 10000};
+    const std::vector<uint8_t> subtitle{tsPacket(
+        SUBTITLE_PID, n,
+        {0, 0, 1, 0xBD, 0, 17, 0x80, 0x80, 5, static_cast<uint8_t>(0x21 | ((pts >> 29) & 0xE)),
+         static_cast<uint8_t>(pts >> 22), static_cast<uint8_t>(((pts >> 14) & 0xFE) | 1),
+         static_cast<uint8_t>(pts >> 7), static_cast<uint8_t>(((pts << 1) & 0xFE) | 1), 0x20, 0,
+         0x0F, 0x80, 0, 1, 0, 0, 0xFF})};
+    data.insert(data.end(), subtitle.begin(), subtitle.end());
+  }
+  writer.WriteVideo(0, 80);
+  const std::vector<uint8_t> video{writer.Take()};
+  data.insert(data.end(), video.begin(), video.end());
+  Open(data, Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+  m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+  m_reader->AddStreamType(INPUTSTREAM_TYPE_SUBTITLE, 3);
+  int videoFrames{0};
+  std::optional<int> firstAudio;
+  bool started{false};
+  for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+       result = m_reader->ReadSample())
+  {
+    if (m_reader->GetStreamId() == VIDEO_ID)
+      ++videoFrames;
+    else if (m_reader->GetStreamId() == AUDIO_ID && !firstAudio)
+      firstAudio = videoFrames;
+  }
+  // The DTS of video frame 24 is more than 1 s after the DTS of frame 0
+  EXPECT_EQ(firstAudio, 24);
+}
+
 // The reader keeps the PTS of a segment while a frame of that segment can
 // still come: a held audio frame, or a frame of a PES in the buffers. The
 // reader drops the other segments.

@@ -129,7 +129,7 @@ namespace TSDemux
     void StartPes(uint64_t position, uint32_t segment); ///< The next appended data starts a PES
     const PesStart* GetPesStart(const unsigned char* data) const; ///< The PES where packet data starts
     uint32_t GetPesSegment() const { return es_pes_start_segment; } ///< Media segment of the last PES start
-    void AddPesSegments(std::set<uint32_t>& segments) const; ///< The media segments of the PES in the buffer
+    void AddPesSegments(std::set<uint32_t>& segments) const; ///< The media segments of the PES in the buffer, and of a PES whose header is not complete
 
   protected:
     void ResetStreamPacket(STREAM_PKT* pkt);

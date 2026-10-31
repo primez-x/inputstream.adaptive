@@ -101,6 +101,9 @@ void ElementaryStream::AddPesSegments(std::set<uint32_t>& segments) const
 {
   for (const PesStart& pes : es_pes_starts)
     segments.insert(pes.segment);
+  // A segment can end inside the header of the next PES
+  if (es_pes_start_pending)
+    segments.insert(es_pes_start_segment);
 }
 
 const ElementaryStream::PesStart* ElementaryStream::GetPesStart(const unsigned char* data) const
