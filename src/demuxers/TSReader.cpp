@@ -212,9 +212,14 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
   uint64_t lastRecovery(static_cast<uint64_t>(m_startPos));
   while (m_pkt.pts == PTS_UNSET || !preceeding || static_cast<uint64_t>(m_pkt.pts) < timeInTs)
   {
-    uint64_t thisFrameStart(m_AVContext->GetRecoveryPos());
     if (!ReadPacket())
       return false;
+    // The demuxer emits a frame only after a later PES starts. The frame
+    // starts in the PES where the frame data starts.
+    const TSDemux::ElementaryStream* stream{m_AVContext->GetStream(m_pkt.pid)};
+    uint64_t thisFrameStart;
+    if (!stream || !stream->GetPesPosition(m_pkt.data, thisFrameStart))
+      continue;
     if (!hasVideo || m_pkt.recoveryPoint || thisFrameStart == m_startPos)
     {
       lastRecovery = thisFrameStart;

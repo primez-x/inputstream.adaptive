@@ -25,8 +25,6 @@ using namespace TSDemux;
 
 AVContext::AVContext(TSDemuxer* const demux, uint64_t pos, uint16_t channel)
   : av_pos(pos)
-  , payload_unit_pos(0)
-  , prev_payload_unit_pos(0)
   , av_data_len(FLUTS_NORMAL_TS_PACKETSIZE)
   , av_pkt_size(0)
   , is_configured(false)
@@ -56,8 +54,6 @@ void AVContext::Reset(void)
   discontinuity = false;
   payload = NULL;
   payload_len = 0;
-  payload_unit_pos = 0;
-  prev_payload_unit_pos = 0;
   packet = NULL;
   invalid_psi_section = false;
 }
@@ -542,8 +538,6 @@ int AVContext::ProcessTSPacket()
   {
     this->packet->has_stream_data = true;
     ret = AVCONTEXT_STREAM_PID_DATA;
-    payload_unit_pos = prev_payload_unit_pos;
-    prev_payload_unit_pos = av_pos;
   }
   return ret;
 }
@@ -1090,6 +1084,8 @@ int AVContext::parse_ts_pes()
     this->packet->packet_table.Reset();
     // Header len is at least 6 bytes. So getting 6 bytes first
     this->packet->packet_table.len = 6;
+    // A seek to a frame starts to read at the PES of the frame
+    this->packet->stream->StartPes(av_pos);
   }
 
   // Position in the payload buffer. Start at 0

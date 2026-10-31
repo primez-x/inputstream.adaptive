@@ -11,6 +11,7 @@
 
 #include <inttypes.h>
 #include <cstddef>    // for size_t
+#include <vector>
 
 #define ES_INIT_BUFFER_SIZE     64000
 #define ES_MAX_BUFFER_SIZE      1048576
@@ -109,6 +110,9 @@ namespace TSDemux
     bool IsMarked(const unsigned char* data) const; ///< True if packet data starts in the marked PES or later
     bool HasOnlyMarkedData() const; ///< True if the next packet starts in the marked PES or later
 
+    void StartPes(uint64_t position); ///< The next appended data starts a PES at this stream position
+    bool GetPesPosition(const unsigned char* data, uint64_t& position) const; ///< Stream position of the PES where packet data starts
+
   protected:
     void ResetStreamPacket(STREAM_PKT* pkt);
     uint64_t Rescale(uint64_t a, uint64_t b, uint64_t c);
@@ -122,6 +126,15 @@ namespace TSDemux
     size_t es_consumed;           ///< Consumed payload. Will be erased on next append
     size_t es_pts_pointer;        ///< Position in buffer where current PTS becomes applicable
     size_t es_parsed;             ///< Parser: Last processed position in buffer
+    struct PesStart
+    {
+      size_t offset;              ///< Position in buffer where the PES data starts
+      uint64_t position;          ///< Stream position of the PES
+    };
+    std::vector<PesStart> es_pes_starts; ///< The PES starts in buffer order, the first PES can start before the buffer
+    bool   es_pes_start_pending;
+    uint64_t es_pes_start_position;
+    void ShiftPesStarts(size_t consumed);
     bool   es_marked;             ///< MarkPes() set es_mark_pointer
     size_t es_mark_pointer;       ///< Position in buffer where the marked PES starts
     bool   es_found_frame;        ///< Parser: Found frame
