@@ -24,6 +24,7 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix the last frame of a TS segment or stream whose parameter sets came in a PES of their own, which was read as two frames
 - Fix a seek in a TS stream to a key frame whose picture PES starts in the next segment, which returned that key frame twice
 - Fix a live seek in a TS stream that waited more than once for the next segment, which lost the first audio frame of an audio PES across the two segments
+- Fix the segment times of HLS streams with EXTINF durations finer than 1 ms, which drifted from the media time (0.24 s after one hour of a YouTube stream), so a seek near a segment start could continue at the next segment
 
 v21.5.25-p3i.3 (2026-10-30)
 - Fix a seek in a live HLS stream that ended the audio when the next audio segment was not available yet

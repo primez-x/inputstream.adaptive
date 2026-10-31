@@ -49,7 +49,7 @@ protected:
   {
     testHelper::testFile = filePath;
 
-    CSrvBroker::GetInstance()->Init({});
+    CSrvBroker::GetInstance()->Init(m_kodiProps);
 
     // Download the manifest
     UTILS::CURL::HTTPResponse resp;
@@ -94,6 +94,7 @@ protected:
 
   adaptive::CHLSTree* tree;
   CHOOSER::IRepresentationChooser* m_reprChooser{nullptr};
+  std::map<std::string, std::string> m_kodiProps;
 };
 
 
@@ -201,6 +202,45 @@ TEST_F(HLSTreeTest, OpenVariant)
 
   EXPECT_EQ(ret, true);
   EXPECT_EQ(tree->base_url_, "https://foo.bar/");
+}
+
+TEST_F(HLSTreeTest, SegmentTimesSumTheExactDurations)
+{
+  OpenTestFileMaster("hls/1a2v_master.m3u8", "https://foo.bar/master.m3u8");
+
+  ASSERT_TRUE(OpenTestFileVariant("hls/ts_fractional_extinf_stream.m3u8",
+                                  "https://foo.bar/stream_2.m3u8", tree->m_currentPeriod,
+                                  tree->m_currentAdpSet, tree->m_currentRepr));
+
+  // The EXTINF values have more precision than the ms of the segment times, so
+  // each segment ends at the exact sum of the durations, rounded to ms
+  const std::vector<uint64_t> ends{2005,  6509,  9512,  15518, 21024, 28031,
+                                   34170, 37540, 44046, 48551, 51554, 57560,
+                                   63065, 70072, 76212, 79582, 86088};
+  const PLAYLIST::CSegContainer& timeline{tree->m_currentRepr->Timeline()};
+  ASSERT_EQ(timeline.GetSize(), ends.size());
+  for (size_t i = 0; i < ends.size(); ++i)
+  {
+    EXPECT_EQ(timeline.Get(i)->startPTS_, i == 0 ? 0 : ends[i - 1]) << "segment " << i;
+    EXPECT_EQ(timeline.Get(i)->m_endPts, ends[i]) << "segment " << i;
+  }
+}
+
+TEST_F(HLSTreeTest, FixMediaSequenceFindsTheSegmentAfterFractionalDurations)
+{
+  m_kodiProps["inputstream.adaptive.manifest_config"] = R"({"hls_fix_mediasequence":true})";
+  OpenTestFileMaster("hls/1a2v_master.m3u8", "https://foo.bar/master.m3u8");
+  PLAYLIST::CRepresentation* rep{tree->m_currentRepr};
+
+  ASSERT_TRUE(OpenTestFileVariant("hls/ts_live_pdt_stream.m3u8", "https://foo.bar/stream_2.m3u8",
+                                  tree->m_currentPeriod, tree->m_currentAdpSet, rep));
+  ASSERT_EQ(rep->Timeline().GetBack()->m_number, 13);
+
+  // The update has the same segments and one more, with a wrong EXT-X-MEDIA-SEQUENCE
+  ASSERT_TRUE(OpenTestFileVariant("hls/ts_live_pdt_stream_wrong_sequence.m3u8", "",
+                                  tree->m_currentPeriod, tree->m_currentAdpSet, rep));
+  EXPECT_EQ(rep->GetStartNumber(), 10);
+  EXPECT_EQ(rep->Timeline().GetBack()->m_number, 14);
 }
 
 TEST_F(HLSTreeTest, ParseKeyUriStartingWithSlash)

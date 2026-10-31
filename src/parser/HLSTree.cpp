@@ -22,6 +22,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include <sstream>
 
@@ -37,6 +38,19 @@ constexpr uint64_t TIMESCALE = 1000;
 // Lower bound for the update interval backoff, in ms, to keep the halving from
 // reaching zero and stopping the update thread
 constexpr uint64_t MIN_UPDATE_INTERVAL_MS = 500;
+
+// \brief Parse an EXTINF duration to ms. The value has more precision than ms,
+//        so the segment times sum the exact durations and round each sum.
+double ParseDurationMs(const std::string& tagValue)
+{
+  return STRING::ToDouble(tagValue) * 1000;
+}
+
+// \brief Round a sum of EXTINF durations to the ms of the segment times
+uint64_t RoundMs(double timeMs)
+{
+  return static_cast<uint64_t>(std::llround(timeMs));
+}
 
 // \brief Parse a tag (e.g. #EXT-X-VERSION:1) to extract name and value
 void ParseTagNameValue(const std::string& line, std::string& tagName, std::string& tagValue)
@@ -238,7 +252,7 @@ void adaptive::CHLSTree::FixMediaSequence(std::stringstream& streamData,
   uint64_t segNumber = lastSeg->m_number;
 
   std::streampos streamInitPos = streamData.tellg();
-  uint64_t dateTime{0};
+  double dateTime{0};
   uint64_t totalSegs{0};
   bool isSegFound{false};
 
@@ -255,13 +269,13 @@ void adaptive::CHLSTree::FixMediaSequence(std::stringstream& streamData,
     }
     else if (tagName == "#EXTINF")
     {
-      if (dateTime >= segStartPts)
+      if (RoundMs(dateTime) >= segStartPts)
       {
         isSegFound = true;
         break;
       }
 
-      dateTime += static_cast<uint64_t>(STRING::ToFloat(tagValue) * 1000);
+      dateTime += ParseDurationMs(tagValue);
       ++totalSegs;
     }
   }
@@ -291,7 +305,7 @@ void adaptive::CHLSTree::FixMediaSequence(std::stringstream& streamData,
 void adaptive::CHLSTree::FixDiscSequence(std::stringstream& streamData, uint32_t& discSeqNumber)
 {
   std::streampos streamInitPos = streamData.tellg();
-  uint64_t dateTime{0};
+  double dateTime{0};
   uint32_t discSeqNumberFix = discSeqNumber;
   bool isDiscFound{false};
 
@@ -313,17 +327,17 @@ void adaptive::CHLSTree::FixDiscSequence(std::stringstream& streamData, uint32_t
     else if (tagName == "#EXTINF")
     {
       if (periodsStartTime.empty())
-        periodsStartTime.emplace_back(dateTime);
+        periodsStartTime.emplace_back(RoundMs(dateTime));
 
-      dateTime += static_cast<uint64_t>(STRING::ToFloat(tagValue) * 1000);
+      dateTime += ParseDurationMs(tagValue);
     }
     else if (tagName == "#EXT-X-DISCONTINUITY")
     {
-      periodsEndTime.emplace_back(dateTime);
-      periodsStartTime.emplace_back(dateTime);
+      periodsEndTime.emplace_back(RoundMs(dateTime));
+      periodsStartTime.emplace_back(RoundMs(dateTime));
     }
   }
-  periodsEndTime.emplace_back(dateTime);
+  periodsEndTime.emplace_back(RoundMs(dateTime));
 
   // Update with single period
   if (periodsStartTime.size() == 1)
@@ -478,6 +492,8 @@ bool adaptive::CHLSTree::ProcessChildManifest(PLAYLIST::CPeriod* period,
 
   CSegContainer newSegments;
   std::optional<CSegment> newSegment;
+  double newSegmentEnd{0}; // The exact end of newSegment, in ms
+  double newSegmentsEnd{0}; // The exact end of the last segment of newSegments, in ms
 
   // Pssh set used between segments
   uint16_t psshSetPos = PSSHSET_POS_DEFAULT;
@@ -629,23 +645,17 @@ bool adaptive::CHLSTree::ProcessChildManifest(PLAYLIST::CPeriod* period,
     }
     else if (tagName == "#EXTINF" && !isSkipUntilDiscont)
     {
-      const uint64_t durMs = static_cast<uint64_t>(STRING::ToFloat(tagValue) * 1000);
-      uint64_t startPts{0};
+      double start{0};
       if (programDateTime != NO_VALUE && period->GetStart() != NO_VALUE)
-      {
-        startPts = programDateTime;
-      }
-      else
-      {
-        const CSegment* lastSeg = newSegments.GetBack();
-        if (lastSeg)
-          startPts = lastSeg->m_endPts;
-      }
+        start = static_cast<double>(programDateTime);
+      else if (!newSegments.IsEmpty())
+        start = newSegmentsEnd;
+      newSegmentEnd = start + ParseDurationMs(tagValue);
 
       // Make a new segment
       newSegment = CSegment();
-      newSegment->startPTS_ = startPts;
-      newSegment->m_endPts = startPts + durMs;
+      newSegment->startPTS_ = RoundMs(start);
+      newSegment->m_endPts = RoundMs(newSegmentEnd);
       newSegment->m_number = currentSegNumber++;
 
       // Reset EXT-X-PROGRAM-DATE-TIME, some playlists do not have this tag on each segment
@@ -734,6 +744,7 @@ bool adaptive::CHLSTree::ProcessChildManifest(PLAYLIST::CPeriod* period,
       newSegment->pssh_set_ = psshSetPos;
 
       newSegments.Add(*newSegment);
+      newSegmentsEnd = newSegmentEnd;
       newSegment.reset();
     }
     else if (tagName == "#EXT-X-DISCONTINUITY-SEQUENCE")
