@@ -67,6 +67,14 @@ AP4_Result CTSSampleReader::Start(bool& bStarted)
 
 AP4_Result CTSSampleReader::ReadSample()
 {
+  if (m_seekTime)
+  {
+    // The seek continues from the start of the next segment
+    TSReader::Reset();
+    if (!Seek(*m_seekTime))
+      return EndOfData();
+  }
+
   if (ReadPacket())
   {
     //! @todo: there is something wrong on pts calculation,
@@ -91,8 +99,21 @@ AP4_Result CTSSampleReader::ReadSample()
     }
     return AP4_SUCCESS;
   }
-  if (!m_adByteStream || !m_adByteStream->waitingForSegment())
+  return EndOfData();
+}
+
+AP4_Result CTSSampleReader::EndOfData()
+{
+  if (m_adByteStream && m_adByteStream->waitingForSegment())
+  {
+    // The session aligns the other streams to the PTS of a video seek
+    if (m_seekTime)
+      m_pts = *m_seekTime;
+  }
+  else
+  {
     m_eos = true;
+  }
   return AP4_ERROR_EOS;
 }
 
@@ -109,6 +130,7 @@ void CTSSampleReader::Reset(bool bEOS)
 {
   TSReader::Reset();
   m_eos = bEOS;
+  m_seekTime.reset();
 }
 
 bool CTSSampleReader::TimeSeek(uint64_t pts, bool preceeding)
@@ -116,11 +138,23 @@ bool CTSSampleReader::TimeSeek(uint64_t pts, bool preceeding)
   if (!StartStreaming(m_typeMask))
     return false;
 
-  AP4_UI64 seekPos((pts * 9) / 100);
-  if (TSReader::SeekTime(seekPos, preceeding))
+  m_seekPreceeding = preceeding;
+  if (AP4_SUCCEEDED(Seek(pts) ? ReadSample() : EndOfData()))
   {
     m_started = true;
-    return AP4_SUCCEEDED(ReadSample());
+    return true;
   }
-  return AP4_ERROR_EOS;
+  // Without EOS, the seek waits for a live segment and ReadSample continues the seek
+  return !m_eos;
+}
+
+bool CTSSampleReader::Seek(uint64_t pts)
+{
+  if (TSReader::SeekTime((pts * 9) / 100, m_seekPreceeding))
+  {
+    m_seekTime.reset();
+    return true;
+  }
+  m_seekTime = pts;
+  return false;
 }

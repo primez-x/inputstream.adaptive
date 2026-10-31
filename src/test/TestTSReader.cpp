@@ -361,3 +361,60 @@ TEST_F(TSSampleReaderTest, PtsDiffFollowsTheVideoOfMuxedSegments)
   EXPECT_EQ(video, SEGMENTS * SEGMENT_VIDEO_FRAMES - 2);
   EXPECT_EQ(audio, SEGMENTS * SEGMENT_FRAMES - 3);
 }
+
+// A seek to the last frame of the stream lands on that frame. A seek past the
+// end of the stream fails, so the session ends the stream.
+TEST_F(TSSampleReaderTest, SeekPastTheEndFails)
+{
+  TSWriter writer;
+  writer.WriteTables(false);
+  writer.WriteAudio(AudioPts(0), 0, SEGMENT_FRAMES, 1, false);
+  Open(writer.Take(), Time(AudioPts(0)) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+  bool started{false};
+  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+
+  ASSERT_TRUE(m_reader->TimeSeek(Time(AudioPts(10)), true));
+  EXPECT_EQ(FrameIndex(), 10);
+  EXPECT_EQ(m_reader->PTS(), Time(AudioPts(10)));
+  EXPECT_FALSE(m_reader->TimeSeek(Time(AudioPts(SEGMENT_FRAMES)), true));
+  EXPECT_TRUE(m_reader->EOS());
+}
+
+// A seek past the last frame of a live stream waits for the next segment. The
+// session aligns the other streams to the PTS of the seek, and the seek
+// continues in the next segment.
+TEST_F(TSSampleReaderTest, SeekWaitsForTheNextLiveSegment)
+{
+  TSWriter writer;
+  std::vector<uint8_t> segments[2];
+  for (int s = 0; s < 2; ++s)
+  {
+    writer.WriteTables(false);
+    writer.WriteAudio(AudioPts(s * SEGMENT_FRAMES), s * SEGMENT_FRAMES, SEGMENT_FRAMES, 1,
+                      false);
+    segments[s] = writer.Take();
+  }
+  Open(segments[0], Time(AudioPts(0)) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+  m_segments->m_waitingForSegment = true;
+  bool started{false};
+  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+
+  const uint64_t target{Time(AudioPts(SEGMENT_FRAMES)) - 1};
+  ASSERT_TRUE(m_reader->TimeSeek(target, true));
+  EXPECT_FALSE(m_reader->EOS());
+  EXPECT_EQ(m_reader->PTS(), target);
+  EXPECT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
+  EXPECT_FALSE(m_reader->EOS());
+  EXPECT_EQ(m_reader->PTS(), target);
+
+  AppendSegment(segments[1], Time(AudioPts(SEGMENT_FRAMES)) - DIFF);
+  m_segments->m_waitingForSegment = false;
+  for (int i = SEGMENT_FRAMES; i < SEGMENT_FRAMES + 3; ++i)
+  {
+    SCOPED_TRACE(i);
+    ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+    EXPECT_EQ(FrameIndex(), i);
+    EXPECT_EQ(m_reader->PTS(), Time(AudioPts(i)));
+    EXPECT_EQ(m_reader->GetPTSDiff(), DIFF);
+  }
+}

@@ -9,6 +9,8 @@
 #include "SampleReader.h"
 #include "demuxers/TSReader.h"
 
+#include <optional>
+
 // forwards
 class CAdaptiveByteStream;
 
@@ -46,6 +48,9 @@ public:
   bool IsEncrypted() const override { return false; }
 
 private:
+  bool Seek(uint64_t pts);
+  AP4_Result EndOfData();
+
   uint32_t m_typeMask; //Bit representation of INPUTSTREAM_TYPES
   uint32_t m_typeMap[16];
   uint64_t m_pts{0};
@@ -54,5 +59,7 @@ private:
   int64_t m_ptsDiff{0};
   bool m_eos{false};
   bool m_started{false};
+  std::optional<uint64_t> m_seekTime; // A seek that waits for a live segment
+  bool m_seekPreceeding{false};
   CAdaptiveByteStream* m_adByteStream;
 };
