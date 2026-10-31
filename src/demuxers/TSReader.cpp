@@ -666,7 +666,7 @@ bool TSReader::HasVideo() const
   return false;
 }
 
-void TSReader::MarkSegmentStart(uint64_t offset)
+void TSReader::MarkSegmentStart(uint64_t offset, std::optional<uint32_t> oldestUsed)
 {
   if (!m_segments.back().offset)
   {
@@ -674,7 +674,8 @@ void TSReader::MarkSegmentStart(uint64_t offset)
     return;
   }
   m_segments.push_back({++m_segment, offset, {}});
-  if (m_segments.size() > MAX_SEGMENTS)
+  while (m_segments.size() > MAX_SEGMENTS &&
+         (!oldestUsed || m_segments.front().number < *oldestUsed))
     m_segments.pop_front();
   // The PES packets that start from now on are in the new segment
   if (m_AVContext)

@@ -198,8 +198,15 @@ void CTSSampleReader::SetPTSOffset(uint64_t offset)
 {
   // The demuxer emits a PES only when the next PES starts. So after a segment
   // change, the next samples are still from the previous segment, and each
-  // sample takes the diff of the segment of the sample.
-  MarkSegmentStart(offset);
+  // sample takes the diff of the segment of the sample. The held frames take
+  // the diff when the next PTS comes.
+  std::optional<uint32_t> oldestHeld;
+  for (const Sample& sample : m_untimed)
+  {
+    if (sample.segment && (!oldestHeld || *sample.segment < *oldestHeld))
+      oldestHeld = sample.segment;
+  }
+  MarkSegmentStart(offset, oldestHeld);
 }
 
 void CTSSampleReader::Reset(bool bEOS)

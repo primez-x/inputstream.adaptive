@@ -1217,6 +1217,31 @@ TEST(TSParserTest, EAc3FramesHaveTheDurationOfTheirBlocks)
 // data after the frame, or with other data, comes at the end of the data: the
 // end of the stream looks the same. Then a dependent frame in the next data
 // has no frame before.
+// Dependent frames without the frame before, as at the start of the data,
+// are no frames, and the frames after them come
+TEST(TSParserTest, EAc3DependentFramesWithoutAFrameBeforeAreSkipped)
+{
+  for (const int orphans : {1, 2, 3})
+  {
+    std::vector<uint8_t> data;
+    for (int i = 0; i < orphans + 3; ++i)
+    {
+      const std::vector<uint8_t> frame{Eac3Frame(i < orphans ? 1 : 0)};
+      data.insert(data.end(), frame.begin(), frame.end());
+    }
+    for (const size_t chunk : {SIZE_MAX, size_t{128}, size_t{184}})
+    {
+      SCOPED_TRACE(testing::Message() << orphans << " dependent frames, parts of " << chunk
+                                      << " bytes");
+      TSDemux::ES_AC3 stream{AUDIO_PID};
+      EXPECT_EQ(ReadAudioFrames(stream, data, chunk),
+                (std::vector<AudioFrame>{{128, 90000, EAC3_TICKS},
+                                         {128, 90000 + EAC3_TICKS, EAC3_TICKS},
+                                         {128, 90000 + 2 * EAC3_TICKS, EAC3_TICKS}}));
+    }
+  }
+}
+
 TEST(TSParserTest, AnEAc3AccessUnitWaitsForTheRestAtTheEndOfTheData)
 {
   for (const size_t split : {size_t{128}, size_t{129}, size_t{130}, size_t{134}, size_t{200}})
@@ -2498,6 +2523,33 @@ TEST_F(TSSampleReaderTest, AudioWithoutAPtsForTooLongComesWithoutPts)
     EXPECT_EQ(read, expected);
     EXPECT_TRUE(m_reader->EOS());
   }
+}
+
+// The held audio frames of short segments take the PTS diff of their segment,
+// also of a segment more than a few segments before the first PTS
+TEST_F(TSSampleReaderTest, HeldAudioOfShortSegmentsHasTheDiffOfItsSegment)
+{
+  TSWriter writer;
+  for (int s = 0; s < 12; ++s)
+  {
+    writer.WriteTables(false);
+    for (int a = 2 * s; a < 2 * s + 2; ++a)
+      writer.WriteAudioFrame(a, a == 20);
+    const uint64_t start{Time(AudioPts(2 * s)) - SegmentDiff(s)};
+    if (s == 0)
+      Open(writer.Take(), start, INPUTSTREAM_TYPE_AUDIO);
+    else
+      AppendSegment(writer.Take(), start);
+  }
+  std::vector<std::tuple<int, uint64_t, int64_t>> read;
+  bool started{false};
+  for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+       result = m_reader->ReadSample())
+    read.emplace_back(FrameIndex(), m_reader->PTS(), m_reader->GetPTSDiff());
+  std::vector<std::tuple<int, uint64_t, int64_t>> expected;
+  for (int a = 0; a < 24; ++a)
+    expected.emplace_back(a, Time(AudioPts(a)), SegmentDiff(a / 2));
+  EXPECT_EQ(read, expected);
 }
 
 // A seek drops the audio frames that came with the first PTS and still wait

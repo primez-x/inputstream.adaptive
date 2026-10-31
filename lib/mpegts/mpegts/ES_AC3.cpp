@@ -116,24 +116,26 @@ void ES_AC3::Parse(STREAM_PKT* pkt)
 {
   int p = es_parsed;
   int l;
-  while ((l = es_len - p) > 8)
+  while (true)
   {
-    if (FindHeaders(es_buf + p, l) < 0)
+    while ((l = es_len - p) > 8)
+    {
+      if (FindHeaders(es_buf + p, l) < 0)
+        break;
+      p++;
+    }
+    es_parsed = p;
+    // A dependent frame without the frame before, as at the start, is no
+    // frame. The search continues after that frame.
+    if (!es_found_frame || l < m_FrameSize || !m_Dependent)
       break;
-    p++;
+    p += m_FrameSize;
+    es_consumed = es_parsed = p;
+    es_found_frame = false;
   }
-  es_parsed = p;
 
   if (es_found_frame && l >= m_FrameSize)
   {
-    // A dependent frame without the frame before, as at the start, is no frame
-    if (m_Dependent)
-    {
-      es_consumed = p + m_FrameSize;
-      es_parsed = es_consumed;
-      es_found_frame = false;
-      return;
-    }
     // The dependent frames after a frame extend the channels of that frame and
     // belong to the frame, as in FFmpeg
     int size = m_FrameSize;

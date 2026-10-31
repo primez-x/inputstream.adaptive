@@ -50,8 +50,10 @@ public:
    *        offset of the first segment after Initialize() reads the stream
    *        information, so the first offset is the offset of that segment.
    * \param offset The PTS offset of the segment
+   * \param oldestUsed The oldest segment that a frame still needs, as a held
+   *        audio frame for the PTS diff of the frame
    */
-  void MarkSegmentStart(uint64_t offset);
+  void MarkSegmentStart(uint64_t offset, std::optional<uint32_t> oldestUsed);
   struct SegmentStart
   {
     uint64_t pts; // PTS of the first frame of the segment, of the video if the video is enabled
