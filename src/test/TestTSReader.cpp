@@ -2026,6 +2026,182 @@ TEST_F(TSSampleReaderTest, AudioOfPesWithoutPtsHasThePtsOfItsFrame)
   }
 }
 
+// A seek scan knows the clock of the frames before the first PTS of the
+// segment, so a seek lands on such a frame. Also at the stream start, and
+// after a read into the next segment.
+TEST_F(TSSampleReaderTest, AudioSeekLandsOnAFrameBeforeTheFirstPts)
+{
+  for (const bool nextSegment : {false, true})
+  {
+    SCOPED_TRACE(nextSegment ? "seek into the next segment" : "seek in the first segment");
+    const int first{nextSegment ? 10 : 0};
+    TSWriter writer;
+    writer.WriteTables(false);
+    if (nextSegment)
+      writer.WriteAudio(AudioPts(0), 0, 10, 1, false);
+    std::vector<uint8_t> segment{writer.Take()};
+    writer.WriteTables(false);
+    for (int a = first; a < first + 30; ++a)
+      writer.WriteAudioFrame(a, a % 6 == (nextSegment ? 1 : 3));
+    std::vector<uint8_t> second{writer.Take()};
+    if (!nextSegment)
+      segment = second;
+    Open(segment, Time(AudioPts(0)) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+    bool started{false};
+    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+    if (nextSegment)
+    {
+      AppendSegment(second, Time(AudioPts(10)) - DIFF);
+      while (m_segments->m_segments.size() > 1)
+        ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+    }
+    m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+    m_segments->m_segmentReadPos = 0;
+    m_reader->Reset(false);
+    ASSERT_TRUE(m_reader->TimeSeek(Time(AudioPts(first + 1)), true));
+    EXPECT_EQ(FrameIndex(), first + 1);
+    EXPECT_EQ(m_reader->PTS(), Time(AudioPts(first + 1)));
+  }
+}
+
+// The first audio PTS can come in the next segment. The audio frames before
+// wait for that PTS, the video frames do not wait.
+TEST_F(TSSampleReaderTest, AudioBeforeAPtsInTheNextSegmentTakesThatClock)
+{
+  for (const bool video : {false, true})
+  {
+    SCOPED_TRACE(video ? "video and audio" : "audio");
+    TSWriter writer;
+    std::vector<uint8_t> segments[2];
+    for (int s = 0; s < 2; ++s)
+    {
+      writer.WriteTables(video);
+      for (int v = 5 * s; v < 5 * s + 5; ++v)
+      {
+        if (video)
+          writer.WriteVideo(v, 1, 5);
+        for (int a = 2 * v; a < 2 * v + 2; ++a)
+          writer.WriteAudioFrame(a, a % 6 == 4 && s == 1);
+      }
+      segments[s] = writer.Take();
+    }
+    Open(segments[0], Time(AudioPts(0)) - DIFF,
+         video ? INPUTSTREAM_TYPE_VIDEO : INPUTSTREAM_TYPE_AUDIO);
+    AppendSegment(segments[1], Time(AudioPts(10)) - DIFF);
+    if (video)
+      m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+    std::vector<std::pair<int, uint64_t>> audio;
+    std::vector<uint64_t> videoPts;
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample())
+    {
+      if (m_reader->GetStreamId() == AUDIO_ID)
+        audio.emplace_back(FrameIndex(), m_reader->PTS());
+      else
+        videoPts.push_back(m_reader->PTS());
+    }
+    std::vector<std::pair<int, uint64_t>> expected;
+    for (int a = 0; a < 20; ++a)
+      expected.emplace_back(a, Time(AudioPts(a)));
+    EXPECT_EQ(audio, expected);
+    std::vector<uint64_t> expectedVideo;
+    for (int v = 0; video && v < 10; ++v)
+      expectedVideo.push_back(Time(VideoPts(v)));
+    EXPECT_EQ(videoPts, expectedVideo);
+  }
+}
+
+// A seek inside the segment continues the read without a reset. The audio
+// frames that wait for a PTS are from before the seek and do not come.
+TEST_F(TSSampleReaderTest, AudioThatWaitsForAPtsDoesNotComeAfterASeek)
+{
+  TSWriter writer;
+  writer.WriteTables(true);
+  for (int v = 0; v < 20; ++v)
+  {
+    writer.WriteVideo(v, 1, 5);
+    for (int a = 2 * v; a < 2 * v + 2; ++a)
+      writer.WriteAudioFrame(a, a == 8);
+  }
+  Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+  m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+  bool started{false};
+  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+  // The video comes while the first audio frames wait
+  ASSERT_EQ(m_reader->GetStreamId(), VIDEO_ID);
+  ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(10)), true));
+  EXPECT_EQ(m_reader->PTS(), Time(VideoPts(10)));
+  std::vector<int> audio;
+  while (AP4_SUCCEEDED(m_reader->ReadSample()))
+  {
+    if (m_reader->GetStreamId() == AUDIO_ID)
+      audio.push_back(FrameIndex());
+  }
+  std::vector<int> expected;
+  for (int a = 20; a < 40; ++a)
+    expected.push_back(a);
+  EXPECT_EQ(audio, expected);
+}
+
+// A stream must have a PTS at least every 0.7 s. Audio frames without a PTS
+// for more than 1 s, or up to the end of the stream, come without a PTS, and
+// the frames after them still come.
+TEST_F(TSSampleReaderTest, AudioWithoutAPtsForTooLongComesWithoutPts)
+{
+  // 1 s holds 46.875 frames
+  for (const int firstPts : {60, -1})
+  {
+    SCOPED_TRACE(firstPts < 0 ? "no PTS" : "first PTS in frame 60");
+    TSWriter writer;
+    writer.WriteTables(false);
+    for (int a = 0; a < 70; ++a)
+      writer.WriteAudioFrame(a, a == firstPts);
+    Open(writer.Take(), Time(AudioPts(0)) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+    std::vector<std::pair<int, uint64_t>> read;
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample())
+      read.emplace_back(FrameIndex(), m_reader->PTS());
+    std::vector<std::pair<int, uint64_t>> expected;
+    for (int a = 0; a < 70; ++a)
+      expected.emplace_back(a, a < 47 || firstPts < 0 ? STREAM_NOPTS_VALUE : Time(AudioPts(a)));
+    EXPECT_EQ(read, expected);
+    EXPECT_TRUE(m_reader->EOS());
+  }
+}
+
+// A live stream that waits for the next segment keeps the audio frames that
+// wait for a PTS
+TEST_F(TSSampleReaderTest, AudioWithoutAPtsWaitsForTheNextLiveSegment)
+{
+  TSWriter writer;
+  std::vector<uint8_t> segments[2];
+  for (int s = 0; s < 2; ++s)
+  {
+    writer.WriteTables(false);
+    for (int a = 6 * s; a < 6 * s + 6; ++a)
+      writer.WriteAudioFrame(a, a == 6);
+    segments[s] = writer.Take();
+  }
+  Open(segments[0], Time(AudioPts(0)) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+  m_segments->m_waitingForSegment = true;
+  bool started{false};
+  EXPECT_EQ(m_reader->Start(started), AP4_ERROR_EOS);
+  EXPECT_FALSE(m_reader->EOS());
+  EXPECT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
+  EXPECT_FALSE(m_reader->EOS());
+  AppendSegment(segments[1], Time(AudioPts(6)) - DIFF);
+  m_segments->m_waitingForSegment = false;
+  std::vector<std::pair<int, uint64_t>> read;
+  while (AP4_SUCCEEDED(m_reader->ReadSample()))
+    read.emplace_back(FrameIndex(), m_reader->PTS());
+  std::vector<std::pair<int, uint64_t>> expected;
+  for (int a = 0; a < 12; ++a)
+    expected.emplace_back(a, Time(AudioPts(a)));
+  EXPECT_EQ(read, expected);
+}
+
 // A seek can land on a key frame whose PES has no PTS. The read after the
 // seek returns that frame with the PTS that the seek found, then the next frames.
 TEST_F(TSSampleReaderTest, ASeekToAKeyFrameInAPesWithoutPtsReturnsTheFrame)

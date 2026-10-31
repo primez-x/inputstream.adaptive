@@ -72,6 +72,8 @@ bool TSReader::Initialize()
     m_AVContext = nullptr;
     return false;
   }
+  // The read of the stream information starts the streams again
+  m_parsersReset = true;
   return true;
 }
 
@@ -95,6 +97,7 @@ void TSReader::Reset(bool resetPackets)
   m_pkt.pts = PTS_UNSET;
   if (resetPackets)
   {
+    m_parsersReset = true;
     m_seekFrame.reset();
     m_frameCopies.clear();
     m_seekPesFrames.clear();
@@ -243,6 +246,23 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
   std::deque<FrameCopy> previousPesFrames{std::move(m_seekPesFrames)};
   m_seekPesFrames.clear();
   m_frameCopies.clear();
+  if (m_parsersReset)
+  {
+    // The scan selects frames by PTS. The frames before the first PTS of the
+    // segment take the clock of that PTS.
+    const uint64_t position{m_AVContext->GetPosition()};
+    std::map<uint16_t, uint64_t> resume;
+    for (const auto& tsInfo : m_streamInfos)
+    {
+      if (tsInfo.m_enabled)
+        resume[tsInfo.m_stream->pid] = position;
+    }
+    std::vector<ClockFrame> startFrames;
+    const std::map<uint16_t, TSDemux::ElementaryStream::Clock> clocks{
+        ReadClocks(startFrames, resume)};
+    m_AVContext->GoPosition(position, true);
+    ResumeClocks(clocks);
+  }
   std::vector<ClockFrame> frames; // The frames read in the segment of the seek position
   const auto keepCopy = [&](const TSDemux::ElementaryStream& stream,
                             const TSDemux::ElementaryStream::PesStart& pes)
@@ -398,8 +418,12 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
     if (tsInfo.m_enabled)
       resume[tsInfo.m_stream->pid] = lastRecovery;
   }
+  // A copy without a PES of the next frame continues at lastRecovery
   for (const auto& [pid, position] : nextPositions)
-    resume[pid] = position;
+  {
+    if (position)
+      resume[pid] = position;
+  }
   const std::map<uint16_t, TSDemux::ElementaryStream::Clock> clocks{ReadClocks(frames, resume)};
   m_frameCopies = std::move(frameCopies);
   m_AVContext->GoPosition(lastRecovery, true);
@@ -415,6 +439,14 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
 }
 
 bool TSReader::ReadPacket(bool scanStreamInfo)
+{
+  const bool read{ReadNextPacket(scanStreamInfo)};
+  if (read)
+    m_parsersReset = false;
+  return read;
+}
+
+bool TSReader::ReadNextPacket(bool scanStreamInfo)
 {
   if (!m_AVContext)
     return false;
@@ -504,22 +536,6 @@ bool TSReader::ReadPacket(bool scanStreamInfo)
   return true;
 }
 
-void TSReader::StartClocks()
-{
-  // The first frames of a stream can come before the first PES with a PTS
-  const uint64_t position{m_AVContext->GetPosition()};
-  std::map<uint16_t, uint64_t> resume;
-  for (const auto& tsInfo : m_streamInfos)
-  {
-    if (tsInfo.m_enabled)
-      resume[tsInfo.m_stream->pid] = position;
-  }
-  std::vector<ClockFrame> frames;
-  const std::map<uint16_t, TSDemux::ElementaryStream::Clock> clocks{ReadClocks(frames, resume)};
-  m_AVContext->GoPosition(position, true);
-  ResumeClocks(clocks);
-}
-
 std::map<uint16_t, TSDemux::ElementaryStream::Clock> TSReader::ReadClocks(
     std::vector<ClockFrame>& frames, const std::map<uint16_t, uint64_t>& resume)
 {
@@ -532,7 +548,7 @@ std::map<uint16_t, TSDemux::ElementaryStream::Clock> TSReader::ReadClocks(
     bool complete{true};
     for (const auto& [pid, position] : resume)
     {
-      if (position == 0 || position == UINT64_MAX || clocks.count(pid))
+      if (position == UINT64_MAX || clocks.count(pid))
         continue;
       const auto first{std::find_if(frames.begin(), frames.end(),
                                     [pid = pid, position = position](const ClockFrame& frame)

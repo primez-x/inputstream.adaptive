@@ -10,6 +10,9 @@
 
 #include "AdaptiveByteStream.h"
 
+#include <algorithm>
+#include <iterator>
+
 CTSSampleReader::CTSSampleReader(AP4_ByteStream* input,
                                INPUTSTREAM_TYPE type,
                                AP4_UI32 streamId,
@@ -60,7 +63,6 @@ AP4_Result CTSSampleReader::Start(bool& bStarted)
     return AP4_ERROR_CANNOT_OPEN_FILE;
   }
 
-  StartClocks();
   m_started = true;
   bStarted = true;
   return ReadSample();
@@ -70,14 +72,7 @@ AP4_Result CTSSampleReader::ReadSample()
 {
   m_sample.reset();
   if (!m_samples.empty() && !GetSeekFramePts())
-  {
-    m_sample = std::move(m_samples.front());
-    m_samples.pop_front();
-    m_dts = m_sample->dts;
-    m_pts = m_sample->pts;
-    m_ptsDiff = m_sample->ptsDiff;
-    return AP4_SUCCESS;
-  }
+    return NextSample();
 
   if (m_seekTime)
   {
@@ -100,10 +95,22 @@ AP4_Result CTSSampleReader::ReadSample()
 
     if (const std::optional<SegmentStart> start{GetSegmentStart()})
       m_ptsDiff = (start->pts * 100) / 9 - start->offset;
+    // The audio frames of a PES without a PTS follow the frames before. Before
+    // the first PTS of the stream, the frames wait for the next PTS.
+    if (GetStreamType() == INPUTSTREAM_TYPE_AUDIO && (GetPts() == PTS_UNSET || !m_untimed.empty()))
+    {
+      m_untimed.push_back(PacketSample());
+      if (GetPts() != PTS_UNSET)
+        ReleaseUntimed(GetPts());
+      else if (UntimedDuration() > MAX_UNTIMED_DURATION)
+        ReleaseUntimed(PTS_UNSET);
+      if (m_samples.empty() || GetSeekFramePts())
+        continue;
+      return NextSample();
+    }
     if (GetSeekFramePts())
     {
-      m_samples.push_back({GetStreamId(), m_dts, m_pts, TSReader::GetDuration(), m_ptsDiff,
-                           {GetPacketData(), GetPacketData() + GetPacketSize()}});
+      m_samples.push_back(PacketSample());
       continue;
     }
     return AP4_SUCCESS;
@@ -123,9 +130,54 @@ AP4_Result CTSSampleReader::EndOfData()
   }
   else
   {
+    // A stream that ends before the next PTS has no clock for the last frames
+    if (!m_untimed.empty())
+    {
+      ReleaseUntimed(PTS_UNSET);
+      return NextSample();
+    }
     m_eos = true;
   }
   return AP4_ERROR_EOS;
+}
+
+CTSSampleReader::Sample CTSSampleReader::PacketSample() const
+{
+  return {GetStreamId(), m_dts, m_pts, TSReader::GetDuration(), m_ptsDiff,
+          {GetPacketData(), GetPacketData() + GetPacketSize()}};
+}
+
+AP4_Result CTSSampleReader::NextSample()
+{
+  m_sample = std::move(m_samples.front());
+  m_samples.pop_front();
+  m_dts = m_sample->dts;
+  m_pts = m_sample->pts;
+  m_ptsDiff = m_sample->ptsDiff;
+  return AP4_SUCCESS;
+}
+
+uint64_t CTSSampleReader::UntimedDuration() const
+{
+  uint64_t duration{0};
+  for (const Sample& sample : m_untimed)
+    duration += sample.duration;
+  return duration;
+}
+
+void CTSSampleReader::ReleaseUntimed(uint64_t pts)
+{
+  // The last frame has the PTS, each frame before ends where the next starts
+  if (pts != PTS_UNSET)
+  {
+    for (auto sample{std::next(m_untimed.rbegin())}; sample != m_untimed.rend(); ++sample)
+    {
+      pts -= sample->duration;
+      sample->dts = sample->pts = (pts * 100) / 9;
+    }
+  }
+  std::move(m_untimed.begin(), m_untimed.end(), std::back_inserter(m_samples));
+  m_untimed.clear();
 }
 
 bool CTSSampleReader::IsSegmentEnd(uint64_t position)
@@ -147,6 +199,7 @@ void CTSSampleReader::Reset(bool bEOS)
   m_eos = bEOS;
   m_seekTime.reset();
   m_samples.clear();
+  m_untimed.clear();
   m_sample.reset();
 }
 
@@ -156,6 +209,8 @@ bool CTSSampleReader::TimeSeek(uint64_t pts, bool preceeding)
     return false;
 
   m_seekPreceeding = preceeding;
+  // The frames before the seek do not come
+  m_untimed.clear();
   if (AP4_SUCCEEDED(Seek(pts) ? ReadSample() : EndOfData()))
   {
     m_started = true;

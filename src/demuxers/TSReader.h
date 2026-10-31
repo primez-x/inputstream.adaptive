@@ -44,11 +44,6 @@ public:
    *        a frame only when the next frame starts.
    */
   bool ReadEndPacket();
-  /*!
-   * \brief Before the first read, find the clock of each stream. The first
-   *        frames of a stream can come before the first PES with a PTS.
-   */
-  void StartClocks();
 
   /*!
    * \brief The data read from now on is a new segment. The session sets the
@@ -101,6 +96,7 @@ protected:
 
 private:
   bool GetPacket();
+  bool ReadNextPacket(bool scanStreamInfo);
   // A frame and the PES where the frame starts
   struct ClockFrame
   {
@@ -130,6 +126,7 @@ private:
   uint32_t m_requiredMask;
   uint32_t m_typeMask;
   bool m_stopAtSegmentEnd{false}; // ReadPacket fails at the end of the current segment
+  bool m_parsersReset{false}; // No packet was read since a reset of the parsers
   struct Segment
   {
     uint32_t number;

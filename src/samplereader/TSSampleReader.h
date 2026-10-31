@@ -67,6 +67,16 @@ protected:
 private:
   bool Seek(uint64_t pts);
   AP4_Result EndOfData();
+  struct Sample;
+  Sample PacketSample() const; // The current packet as a sample
+  AP4_Result NextSample(); // Returns the first of m_samples
+  uint64_t UntimedDuration() const;
+  /*!
+   * \brief Moves the frames of m_untimed to m_samples
+   * \param pts The PTS of the last frame, the frames before take the clock of
+   *        that PTS. PTS_UNSET: the frames have no PTS.
+   */
+  void ReleaseUntimed(uint64_t pts);
 
   uint32_t m_typeMask; //Bit representation of INPUTSTREAM_TYPES
   uint32_t m_typeMap[16];
@@ -90,6 +100,11 @@ private:
   // so that frame comes first. The samples of other streams read before the
   // frame follow the frame.
   std::deque<Sample> m_samples;
+  // The audio frames before the first PTS of the stream wait for that PTS. A
+  // stream needs a PTS every 0.7 s, frames without a PTS for longer come
+  // without a PTS.
+  static constexpr uint64_t MAX_UNTIMED_DURATION{90000};
+  std::deque<Sample> m_untimed;
   std::optional<Sample> m_sample; // The current sample, from m_samples
   CAdaptiveByteStream* m_adByteStream;
 };
