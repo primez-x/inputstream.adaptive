@@ -14,6 +14,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <map>
 #include <stdlib.h>
 
 #include <bento4/Ap4ByteStream.h>
@@ -241,7 +242,8 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
   std::deque<FrameCopy> previousPesFrames{std::move(m_seekPesFrames)};
   m_seekPesFrames.clear();
   m_frameCopies.clear();
-  const auto keepCopy = [&](const TSDemux::ElementaryStream::PesStart& pes)
+  const auto keepCopy = [&](const TSDemux::ElementaryStream& stream,
+                            const TSDemux::ElementaryStream::PesStart& pes)
   {
     // The PES continues, so the frames of the PES that came before are copies too
     for (auto frame{previousPesFrames.begin()}; frame != previousPesFrames.end();)
@@ -255,7 +257,7 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
         ++frame;
     }
     copies.push_back({m_pkt, {m_pkt.data, m_pkt.data + m_pkt.size}, GetSegmentStart(),
-                      pes.position});
+                      pes.position, stream.NextFramePosition()});
   };
   // The stream cannot seek back into a segment after a read of the next
   // segment. So the scan reads the frames left in the buffers at the end of a
@@ -298,7 +300,7 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
       continue;
     const bool isCopy{pes->position < readStart};
     if (isCopy)
-      keepCopy(*pes);
+      keepCopy(*stream, *pes);
     else if (hasVideo && GetStreamType() != INPUTSTREAM_TYPE_VIDEO)
     {
       const uint16_t pid{m_pkt.pid};
@@ -309,7 +311,7 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
                                          }),
                           lastPesFrames.end());
       lastPesFrames.push_back({m_pkt, {m_pkt.data, m_pkt.data + m_pkt.size}, GetSegmentStart(),
-                               pes->position});
+                               pes->position, stream->NextFramePosition()});
     }
     if (m_pkt.pts == PTS_UNSET)
       continue;
@@ -353,7 +355,7 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
       if (!pes)
         continue;
       if (pes->position < readStart)
-        keepCopy(*pes);
+        keepCopy(*stream, *pes);
       else
         pending.erase(std::remove(pending.begin(), pending.end(), m_pkt.pid), pending.end());
     }
@@ -367,12 +369,16 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
     }
   }
   m_AVContext->GoPosition(lastRecovery, true);
-  // The parser does not see a copied key frame, so the frames after the copy
-  // continue the decode of that key frame
-  if (seekFrameIsCopy)
+  // The data of the last copied frame of a stream can continue after
+  // lastRecovery, also in a PES of its own. The parser does not see a copied
+  // key frame, so the frames after the copy continue the decode of that key frame.
+  std::map<uint16_t, uint64_t> nextPositions;
+  for (const FrameCopy& copy : m_frameCopies)
+    nextPositions[copy.pkt.pid] = copy.nextPosition;
+  for (const auto& [pid, position] : nextPositions)
   {
-    if (TSDemux::ElementaryStream* stream{m_AVContext->GetStream(seekFrame->pid)})
-      stream->ContinueDecode(true);
+    if (TSDemux::ElementaryStream* stream{m_AVContext->GetStream(pid)})
+      stream->ContinueAfterCopy(position, seekFrameIsCopy && pid == seekFrame->pid);
   }
   m_seekFrame = seekFrame;
 

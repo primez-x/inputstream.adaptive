@@ -209,6 +209,15 @@ struct ParsedInfo
   }
 };
 
+std::unique_ptr<TSDemux::ElementaryStream> MakeParser(const VideoCodec& codec)
+{
+  if (codec.streamType == H264.streamType)
+    return std::make_unique<TSDemux::ES_h264>(VIDEO_PID);
+  if (codec.streamType == HEVC.streamType)
+    return std::make_unique<TSDemux::ES_hevc>(VIDEO_PID);
+  return std::make_unique<TSDemux::ES_MPEG2Video>(VIDEO_PID);
+}
+
 // Parses access units, each in its own PES with a PTS. The parser gets the
 // data in chunks, as from TS packets. Optionally the data ends at a cut in an
 // access unit, as at the end of a segment, and the next data continues there.
@@ -217,13 +226,7 @@ ParsedInfo ParseAccessUnits(const VideoCodec& codec,
                             size_t chunk,
                             std::optional<std::pair<size_t, size_t>> cut = std::nullopt)
 {
-  std::unique_ptr<TSDemux::ElementaryStream> stream;
-  if (codec.streamType == H264.streamType)
-    stream = std::make_unique<TSDemux::ES_h264>(VIDEO_PID);
-  else if (codec.streamType == HEVC.streamType)
-    stream = std::make_unique<TSDemux::ES_hevc>(VIDEO_PID);
-  else
-    stream = std::make_unique<TSDemux::ES_MPEG2Video>(VIDEO_PID);
+  const std::unique_ptr<TSDemux::ElementaryStream> stream{MakeParser(codec)};
   TSDemux::STREAM_PKT pkt;
   for (size_t n = 0; n < accessUnits.size(); ++n)
   {
@@ -827,6 +830,50 @@ TEST(TSParserTest, ThePartsOfTheParameterSetsGiveTheSameStreamInformation)
 
 // A 3 byte start code can start a parameter set, also at the start of the
 // data. The extra data has the parameter sets with 4 byte start codes.
+// A seek can copy the last frame of the data, which the end of the data
+// completed. The rest of that frame follows up to the next PES with a PTS, and
+// after the reset of the seek, the stream drops that rest.
+TEST(TSParserTest, TheRestOfACopiedLastFrameIsDropped)
+{
+  for (const VideoCodec* codec : {&H264, &HEVC, &MPEG2})
+  {
+    SCOPED_TRACE(codec->name);
+    const std::unique_ptr<TSDemux::ElementaryStream> stream{MakeParser(*codec)};
+    const std::vector<uint8_t>& key{codec->keyFrame};
+    const size_t cut{PictureStart(*codec, key) + 8};
+    std::vector<int64_t> read;
+    TSDemux::STREAM_PKT pkt;
+    const auto append = [&](int pes, const std::vector<uint8_t>& data, bool timestamped)
+    {
+      if (timestamped)
+        stream->c_pts = stream->c_dts = 90000 + 3000 * pes;
+      stream->StartPes(pes, 0);
+      stream->Append(data.data(), data.size(), timestamped);
+      while (stream->GetStreamPacket(&pkt))
+        read.push_back(pkt.pts);
+    };
+    append(0, key, true);
+    append(1, {key.begin(), key.begin() + cut}, true);
+    while (stream->GetEndPacket(&pkt))
+      read.push_back(pkt.pts);
+    EXPECT_EQ(read, (std::vector<int64_t>{90000, 93000}));
+    EXPECT_EQ(stream->NextFramePosition(), UINT64_MAX);
+
+    stream->ContinueAfterCopy(stream->NextFramePosition(), true);
+    stream->Reset();
+    read.clear();
+    // The rest of the copied frame, and a frame in the same PES without a PTS
+    std::vector<uint8_t> rest{key.begin() + cut, key.end()};
+    rest.insert(rest.end(), codec->frame.begin(), codec->frame.end());
+    append(2, rest, false);
+    append(3, codec->frame, true);
+    append(4, codec->frame, true);
+    while (stream->GetEndPacket(&pkt))
+      read.push_back(pkt.pts);
+    EXPECT_EQ(read, (std::vector<int64_t>{99000, 102000}));
+  }
+}
+
 TEST(TSParserTest, TheExtraDataHasTheParameterSetsAfter3ByteStartCodes)
 {
   const auto shortStartCodes = [](const std::vector<uint8_t>& au) {
@@ -1607,6 +1654,76 @@ TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
       if (landing == SPLIT_FRAME)
         EXPECT_GE(landingSize, bigKeyFrame.size() - 1);
       EXPECT_FALSE(m_reader->GetInformation(info));
+    }
+  }
+}
+
+// The parameter sets and the picture of a key frame can come in two PES
+// packets with the PTS of the frame, and the segment can end after the first
+// TS packets of the frame. A seek to that key frame returns the whole frame,
+// and the frame before does not take the parameter sets.
+TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameInTwoTimestampedPesAcrossTwoSegments)
+{
+  constexpr int SPLIT_FRAME{SEGMENT_VIDEO_FRAMES - 1};
+  for (const VideoCodec* codec : {&H264, &HEVC, &MPEG2})
+  {
+    std::vector<uint8_t> bigKeyFrame{codec->keyFrame};
+    bigKeyFrame.resize(500, 0);
+    TSWriter writer{*codec};
+    writer.WriteTables(true);
+    for (int frame = 0; frame < SPLIT_FRAME; ++frame)
+      writer.WriteVideoFrameInTimestampedPes(frame, frame % 5 ? codec->frame : codec->keyFrame);
+    const std::vector<uint8_t> frames{writer.Take()};
+    writer.WriteVideoFrameInTimestampedPes(SPLIT_FRAME, bigKeyFrame);
+    const std::vector<uint8_t> split{writer.Take()};
+    writer.WriteTables(true);
+    const std::vector<uint8_t> tables{writer.Take()};
+    for (int frame = SEGMENT_VIDEO_FRAMES; frame < 2 * SEGMENT_VIDEO_FRAMES; ++frame)
+      writer.WriteVideoFrameInTimestampedPes(frame, frame % 5 ? codec->frame : codec->keyFrame);
+    const std::vector<uint8_t> rest{writer.Take()};
+
+    for (size_t cut = 188; cut < split.size(); cut += 188)
+    for (const bool live : {false, true})
+    {
+      SCOPED_TRACE(testing::Message() << codec->name << ", cut " << cut << (live ? ", live" : ""));
+      std::vector<uint8_t> first{frames};
+      first.insert(first.end(), split.begin(), split.begin() + cut);
+      std::vector<uint8_t> second{tables};
+      second.insert(second.end(), split.begin() + cut, split.end());
+      second.insert(second.end(), rest.begin(), rest.end());
+
+      Open(first, Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+      if (live)
+        m_segments->m_waitingForSegment = true;
+      else
+        AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+      m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+      m_segments->m_segmentReadPos = 0;
+      m_reader->Reset(false);
+      ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(SPLIT_FRAME)), true));
+      if (live)
+      {
+        AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+        m_segments->m_waitingForSegment = false;
+        ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+      }
+      std::vector<uint64_t> read;
+      do
+      {
+        const int frame{SPLIT_FRAME + static_cast<int>(read.size())};
+        SCOPED_TRACE(frame);
+        read.push_back(m_reader->PTS());
+        EXPECT_GE(m_reader->GetSampleDataSize(),
+                  (frame == SPLIT_FRAME ? bigKeyFrame
+                   : frame % 5           ? codec->frame
+                                         : codec->keyFrame)
+                          .size() -
+                      1);
+      } while (AP4_SUCCEEDED(m_reader->ReadSample()));
+      std::vector<uint64_t> expected;
+      for (int frame = SPLIT_FRAME; frame < 2 * SEGMENT_VIDEO_FRAMES; ++frame)
+        expected.push_back(Time(VideoPts(frame)));
+      EXPECT_EQ(read, expected);
     }
   }
 }

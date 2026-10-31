@@ -34,6 +34,9 @@ ElementaryStream::ElementaryStream(uint16_t pes_pid)
   , es_end_of_data(false)
   , es_skip_to_pts(false)
   , es_continue_decode(false)
+  , es_copy_next_position(0)
+  , es_resume_position(0)
+  , es_drop_pes(false)
   , es_pes_start_pending(false)
   , es_pes_start_position(0)
   , es_pes_start_segment(0)
@@ -63,7 +66,11 @@ void ElementaryStream::Reset(void)
   ClearBuffer();
   es_found_frame = false;
   es_frame_valid = false;
-  es_skip_to_pts = false;
+  // After a frame copy, the PES that start before the next frame belong to the copy
+  const uint64_t next = std::exchange(es_copy_next_position, 0);
+  es_skip_to_pts = next == UINT64_MAX;
+  es_resume_position = next == UINT64_MAX ? 0 : next;
+  es_drop_pes = false;
   es_pts_position = UINT64_MAX;
   es_next_pts = PTS_UNSET;
 }
@@ -76,6 +83,7 @@ void ElementaryStream::ClearBuffer()
 
 void ElementaryStream::StartPes(uint64_t position, uint32_t segment)
 {
+  es_drop_pes = position < es_resume_position;
   es_pes_start_pending = true;
   es_pes_start_position = position;
   es_pes_start_segment = segment;
@@ -93,6 +101,20 @@ const ElementaryStream::PesStart* ElementaryStream::GetPesStart(const unsigned c
       return &*it;
   }
   return NULL;
+}
+
+uint64_t ElementaryStream::NextFramePosition() const
+{
+  if (es_skip_to_pts)
+    return UINT64_MAX;
+  const PesStart* pes = GetPesStart(es_buf + es_consumed);
+  return pes ? pes->position : 0;
+}
+
+void ElementaryStream::ContinueAfterCopy(uint64_t nextFramePosition, bool keyFrame)
+{
+  es_copy_next_position = nextFramePosition;
+  es_continue_decode = keyFrame;
 }
 
 const ElementaryStream::PesStart* ElementaryStream::StartPicture(size_t offset)
@@ -174,6 +196,11 @@ void ElementaryStream::ShiftPesStarts(size_t consumed)
 
 int ElementaryStream::Append(const unsigned char* buf, size_t len, bool new_pts)
 {
+  if (es_drop_pes)
+  {
+    es_pes_start_pending = false;
+    return 0;
+  }
   // A seek scan reads on after the end of a segment. The rest of a frame that
   // the end of the segment completed is not the start of the next frame.
   if (es_skip_to_pts)
