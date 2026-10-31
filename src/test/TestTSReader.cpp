@@ -8,6 +8,7 @@
 
 #include "AdaptiveByteStream.h"
 #include "TestAdaptiveStream.h"
+#include "mpegts/ES_AAC.h"
 #include "mpegts/ES_MPEGVideo.h"
 #include "mpegts/ES_h264.h"
 #include "mpegts/ES_hevc.h"
@@ -871,6 +872,42 @@ TEST(TSParserTest, TheRestOfACopiedLastFrameIsDropped)
     while (stream->GetEndPacket(&pkt))
       read.push_back(pkt.pts);
     EXPECT_EQ(read, (std::vector<int64_t>{99000, 102000}));
+  }
+}
+
+// A corrupt ADTS header can give a frame length shorter than the header. The
+// parser skips that header and finds the next frames.
+TEST(TSParserTest, AnAdtsFrameShorterThanItsHeaderIsSkipped)
+{
+  // The length of a header without a CRC, and of a header with a CRC
+  for (const auto& [protectionAbsent, length] :
+       {std::pair{true, 0U}, std::pair{true, 6U}, std::pair{false, 8U}})
+  {
+    SCOPED_TRACE(testing::Message() << "length " << length << (protectionAbsent ? "" : ", CRC"));
+    std::vector<uint8_t> data{AacFrame(0)};
+    std::vector<uint8_t> corrupt{AacFrame(1)};
+    corrupt[1] = protectionAbsent ? 0xF1 : 0xF0;
+    corrupt[3] = static_cast<uint8_t>(0x80 | (length >> 11));
+    corrupt[4] = static_cast<uint8_t>(length >> 3);
+    corrupt[5] = static_cast<uint8_t>(((length & 7) << 5) | 0x1F);
+    corrupt.resize(9);
+    data.insert(data.end(), corrupt.begin(), corrupt.end());
+    for (int i = 2; i < 4; ++i)
+    {
+      const std::vector<uint8_t> frame{AacFrame(i)};
+      data.insert(data.end(), frame.begin(), frame.end());
+    }
+    TSDemux::ES_AAC stream{AUDIO_PID};
+    stream.stream_type = TSDemux::STREAM_TYPE_AUDIO_AAC;
+    stream.c_pts = stream.c_dts = 90000;
+    stream.StartPes(0, 0);
+    stream.Append(data.data(), data.size(), true);
+    std::vector<int> read;
+    TSDemux::STREAM_PKT pkt;
+    // A frame without data would come again and again
+    for (int packets = 0; packets < 10 && stream.GetStreamPacket(&pkt); ++packets)
+      read.push_back(pkt.size ? (pkt.data[pkt.size - 2] << 8) | pkt.data[pkt.size - 1] : -1);
+    EXPECT_EQ(read, (std::vector<int>{0, 2, 3}));
   }
 }
 

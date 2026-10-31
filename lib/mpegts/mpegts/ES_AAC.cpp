@@ -147,6 +147,9 @@ int ES_AAC::FindHeaders(uint8_t *buf, int buf_size)
       bs.skipBits(4);
 
       m_FrameSize = bs.readBits(13);
+      // The frame length includes the header, a shorter length is corrupt
+      if (m_FrameSize < (noCrc ? 7 : 9))
+        return 0;
       m_SampleRate    = aac_sample_rates[SampleRateIndex & 0x0F];
 
       es_found_frame = true;
