@@ -27,8 +27,9 @@ namespace TSDemux
     int64_t     m_DTS;                /* dts of the current frame */
 
     int FindHeaders(uint8_t *buf, int buf_size);
-    /* The size of the E-AC-3 dependent frame at buf, or 0 */
-    static int DependentFrameSize(const uint8_t* buf);
+    /* The size of the E-AC-3 dependent frame in the size bytes at buf: 0 for
+       no dependent frame, -1 while the bytes are too few to tell */
+    static int DependentFrameSize(const uint8_t* buf, int size);
 
   public:
     ES_AC3(uint16_t pid);

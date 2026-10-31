@@ -139,15 +139,17 @@ void ES_AC3::Parse(STREAM_PKT* pkt)
     int size = m_FrameSize;
     while (true)
     {
-      const int dependent = l - size >= EAC3_DEPENDENT_HEADER_SIZE
-                                ? DependentFrameSize(es_buf + p + size)
-                                : -1;
-      if (dependent > 0 && l - size >= dependent)
+      const int rest = l - size;
+      const int dependent = DependentFrameSize(es_buf + p + size, rest);
+      if (dependent > 0 && rest >= dependent)
         size += dependent;
-      else if (dependent && !es_end_of_data)
-        return; // The data of the next header or of the dependent frame follows
-      else
+      // No dependent frame follows. At the end of the data, nothing can follow
+      // too: the end of a segment between the frames looks the same as the
+      // end of the stream.
+      else if (!dependent || (es_end_of_data && !rest))
         break;
+      else
+        return; // The rest of the dependent frame or of the header follows
     }
     bool streamChange = SetAudioInformation(m_Channels, m_SampleRate, m_BitRate, 0, 0);
     pkt->pid            = pid;
@@ -164,17 +166,25 @@ void ES_AC3::Parse(STREAM_PKT* pkt)
   }
 }
 
-int ES_AC3::DependentFrameSize(const uint8_t* buf)
+int ES_AC3::DependentFrameSize(const uint8_t* buf, int size)
 {
-  // The sync word, the frame type, the frame size, and bsid 11 to 16 of E-AC-3
-  if (buf[0] != 0x0b || buf[1] != 0x77)
+  // The sync word and the frame type of a dependent frame
+  if ((size >= 1 && buf[0] != 0x0b) || (size >= 2 && buf[1] != 0x77) ||
+      (size >= 3 && buf[2] >> 6 != EAC3_FRAME_TYPE_DEPENDENT))
     return 0;
+  if (size < EAC3_DEPENDENT_HEADER_SIZE)
+    return -1;
+  // The header checks of FindHeaders(): bsid 11 to 16 of E-AC-3, the frame
+  // size and the sample rate codes
   CBitstream bs(const_cast<uint8_t*>(buf) + 2, (EAC3_DEPENDENT_HEADER_SIZE - 2) * 8);
   const int bsid = bs.showBits(29) & 0x1F;
-  if (bsid <= 10 || bsid > 16 || bs.readBits(2) != EAC3_FRAME_TYPE_DEPENDENT)
+  if (bsid <= 10 || bsid > 16)
     return 0;
-  bs.skipBits(3); // substreamid
-  return (bs.readBits(11) + 1) << 1;
+  bs.skipBits(2 + 3); // frame type, substreamid
+  const int frameSize = (bs.readBits(11) + 1) << 1;
+  if (frameSize < AC3_HEADER_SIZE || bs.readBits(4) == 0xF)
+    return 0;
+  return frameSize;
 }
 
 int ES_AC3::FindHeaders(uint8_t *buf, int buf_size)

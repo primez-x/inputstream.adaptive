@@ -219,6 +219,7 @@ bool CTSSampleReader::TimeSeek(uint64_t pts, bool preceeding)
 
   m_seekPreceeding = preceeding;
   // The frames before the seek do not come
+  m_samples.clear();
   m_untimed.clear();
   if (AP4_SUCCEEDED(Seek(pts) ? ReadSample() : EndOfData()))
   {

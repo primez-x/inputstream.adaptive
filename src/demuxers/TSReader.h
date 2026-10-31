@@ -109,6 +109,12 @@ protected:
 private:
   bool GetPacket();
   bool ReadNextPacket(bool scanStreamInfo);
+  bool ReadNextEndPacket();
+  /*!
+   * \brief The packet of a read, if the read returned one, sets the state that
+   *        each packet sets
+   */
+  bool PacketRead(bool read);
   // A frame and the PES where the frame starts
   struct ClockFrame
   {

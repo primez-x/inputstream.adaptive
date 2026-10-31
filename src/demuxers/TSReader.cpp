@@ -447,7 +447,17 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
 
 bool TSReader::ReadPacket(bool scanStreamInfo)
 {
-  if (!ReadNextPacket(scanStreamInfo))
+  return PacketRead(ReadNextPacket(scanStreamInfo));
+}
+
+bool TSReader::ReadEndPacket()
+{
+  return PacketRead(ReadNextEndPacket());
+}
+
+bool TSReader::PacketRead(bool read)
+{
+  if (!read)
     return false;
   m_parsersReset = false;
   // The first audio PES of a segment can have no PTS, the first frame has the
@@ -482,7 +492,7 @@ bool TSReader::ReadNextPacket(bool scanStreamInfo)
   while (!ret)
   {
     if (m_stopAtSegmentEnd && IsSegmentEnd(m_AVContext->GetPosition()))
-      return ReadEndPacket();
+      return ReadNextEndPacket();
 
     int errorCode;
     if ((errorCode = m_AVContext->TSResync()) != TSDemux::AVCONTEXT_CONTINUE)
@@ -619,7 +629,7 @@ void TSReader::ResumeClocks(const std::map<uint16_t, TSDemux::ElementaryStream::
   }
 }
 
-bool TSReader::ReadEndPacket()
+bool TSReader::ReadNextEndPacket()
 {
   for (auto& tsInfo : m_streamInfos)
   {
