@@ -403,6 +403,35 @@ TEST_F(DASHTreeTest, CalculatePsshDefaultKid)
   EXPECT_EQ(tree->m_periods[0]->GetPSSHSets()[2].defaultKID_.size(), 32);
 }
 
+// A seek to a time in the current segment restarts the segment, also a seek
+// to a time before the last read. A reader cannot seek back by itself.
+TEST_F(DASHTreeAdaptiveStreamTest, SeekInTheCurrentSegmentRestartsTheSegment)
+{
+  OpenTestFile("mpd/segtpl.mpd", "https://foo.bar/mpd/test.mpd");
+  for (const bool preceeding : {true, false})
+  {
+    SCOPED_TRACE(preceeding ? "preceeding" : "not preceeding");
+    SetTestStream(NewStream(tree->m_periods[0]->GetAdaptationSets()[0].get()));
+    testStream->start_stream();
+    // The initialization segment, then a part of the first media segment
+    ASSERT_EQ(testStream->read(buf, 16), 16U);
+    ASSERT_EQ(testStream->read(buf, 4), 4U);
+    const uint64_t segmentStart{testStream->tell() - 4};
+    const PLAYLIST::CRepresentation* rep{testStream->getRepresentation()};
+    const PLAYLIST::CSegment* segment{rep->current_segment_};
+    ASSERT_NE(segment, nullptr);
+    // A video seek that is not preceeding takes the next segment after a segment start
+    const double seconds{static_cast<double>(segment->startPTS_) / rep->GetTimescale()};
+    bool needReset{false};
+    ASSERT_TRUE(testStream->seek_time(seconds, preceeding, needReset));
+    EXPECT_TRUE(needReset);
+    EXPECT_EQ(rep->current_segment_, segment);
+    EXPECT_EQ(testStream->tell(), segmentStart);
+    ASSERT_EQ(testStream->read(buf, 4), 4U);
+    EXPECT_EQ(std::string(reinterpret_cast<char*>(buf), 4), "Sixt");
+  }
+}
+
 TEST_F(DASHTreeAdaptiveStreamTest, subtitles)
 {
   OpenTestFile("mpd/subtitles.mpd", "https://foo.bar/subtitles.mpd");

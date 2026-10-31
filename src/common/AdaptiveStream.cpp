@@ -1268,7 +1268,7 @@ bool AdaptiveStream::seek_time(double seek_seconds, bool preceeding, bool& needR
     {
       ResetCurrentSegment(newSeg);
     }
-    else if (!preceeding)
+    else
     {
       // restart stream if it has 'finished', e.g in the case of subtitles
       // where there may be a few or only one segment for the period and
@@ -1277,11 +1277,11 @@ bool AdaptiveStream::seek_time(double seek_seconds, bool preceeding, bool& needR
       {
         ResetCurrentSegment(newSeg);
       }
+      // The reader scans the segment from the start, also for a seek time
+      // before the last read
       absolute_position_ -= segment_read_pos_;
       segment_read_pos_ = 0;
     }
-    else
-      needReset = false;
     return true;
   }
   else
