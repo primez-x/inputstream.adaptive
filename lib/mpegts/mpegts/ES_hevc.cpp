@@ -57,7 +57,7 @@ void ES_hevc::Parse(STREAM_PKT* pkt)
     {
       // The NAL unit ends at the start code
       if (m_LastStartPos != -1)
-         Parse_HEVC(frame_ptr + m_LastStartPos, p - 3 - frame_ptr - m_LastStartPos, frameComplete);
+         Parse_HEVC(frame_ptr + m_LastStartPos, p - 3 - frame_ptr - m_LastStartPos, frameComplete, false);
       m_LastStartPos = p - frame_ptr; // save relative position from start
       if (frameComplete)
         break;
@@ -66,19 +66,16 @@ void ES_hevc::Parse(STREAM_PKT* pkt)
   es_parsed = p;
   m_StartCode = startcode;
 
-  // The last NAL unit ends at the end of the data, and so does the last frame
+  // The last NAL unit ends at the end of the data. Without a frame, the next
+  // data continues the NAL unit, and the parse of that data parses it again.
   if (!frameComplete && es_end_of_data)
   {
     if (m_LastStartPos != -1)
-    {
-      Parse_HEVC(frame_ptr + m_LastStartPos, es_len - frame_ptr - m_LastStartPos, frameComplete);
-      m_LastStartPos = -1;
-    }
+      Parse_HEVC(frame_ptr + m_LastStartPos, es_len - frame_ptr - m_LastStartPos, frameComplete, true);
     if (!frameComplete && es_found_frame)
     {
       frameComplete = true;
-      es_consumed = es_len;
-      es_skip_to_pts = true;
+      EndLastFrame(frame_ptr);
     }
   }
 
@@ -137,7 +134,7 @@ void ES_hevc::Reset()
 }
 
 
-void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &complete)
+void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &complete, bool canContinue)
 {
   uint8_t *buf = es_buf + buf_ptr;
   uint16_t header;
@@ -200,8 +197,10 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
   {
     switch (hdr.nal_unit_type)
     {
+    // A parameter set at the end of the data can continue in the next data.
+    // Then the parse of the next data reads the parameter set.
     case NAL_VPS_NUT:
-      if (m_NeedVPS && AppendExtraData(buf, NumBytesInNalUnit))
+      if (m_NeedVPS && !canContinue && AppendExtraData(buf, NumBytesInNalUnit))
         m_NeedVPS = false;
       break;
 
@@ -213,6 +212,8 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
         es_consumed = buf_ptr - 3;
         return;
       }
+      if (canContinue)
+        break;
       Parse_SPS(buf, NumBytesInNalUnit, hdr);
       if (m_NeedSPS && AppendExtraData(buf, NumBytesInNalUnit))
         m_NeedSPS = false;
@@ -227,6 +228,8 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
         es_consumed = buf_ptr - 3;
         return;
       }
+      if (canContinue)
+        break;
       Parse_PPS(buf, NumBytesInNalUnit);
       if (m_NeedPPS && AppendExtraData(buf, NumBytesInNalUnit))
         m_NeedPPS = false;

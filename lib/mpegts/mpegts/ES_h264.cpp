@@ -141,8 +141,7 @@ void ES_h264::Parse(STREAM_PKT* pkt)
   if (!frameComplete && es_end_of_data && es_found_frame)
   {
     frameComplete = true;
-    es_consumed = es_len;
-    es_skip_to_pts = true;
+    EndLastFrame(frame_ptr);
   }
 
   if (frameComplete)

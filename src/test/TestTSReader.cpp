@@ -189,10 +189,12 @@ struct ParsedInfo
 };
 
 // Parses access units, each in its own PES with a PTS. The parser gets the
-// data in chunks, as from TS packets.
+// data in chunks, as from TS packets. Optionally the data ends at a cut in an
+// access unit, as at the end of a segment, and the next data continues there.
 ParsedInfo ParseAccessUnits(const VideoCodec& codec,
                             const std::vector<std::vector<uint8_t>>& accessUnits,
-                            size_t chunk)
+                            size_t chunk,
+                            std::optional<std::pair<size_t, size_t>> cut = std::nullopt)
 {
   std::unique_ptr<TSDemux::ElementaryStream> stream;
   if (codec.streamType == H264.streamType)
@@ -211,6 +213,8 @@ ParsedInfo ParseAccessUnits(const VideoCodec& codec,
     std::vector<size_t> ends;
     for (size_t end = chunk; end < au.size(); end += chunk)
       ends.push_back(end);
+    if (cut && cut->first == n)
+      ends.push_back(cut->second);
     ends.push_back(au.size());
     std::sort(ends.begin(), ends.end());
     size_t start{0};
@@ -219,6 +223,11 @@ ParsedInfo ParseAccessUnits(const VideoCodec& codec,
       stream->Append(au.data() + start, end - start, start == 0);
       while (stream->GetStreamPacket(&pkt))
         ;
+      if (cut && cut->first == n && cut->second == end)
+      {
+        while (stream->GetEndPacket(&pkt))
+          ;
+      }
       start = end;
     }
   }
@@ -733,8 +742,8 @@ TEST_F(TSSampleReaderTest, ALongSpsKeepsTheFrames)
   EXPECT_EQ(frames, SEGMENT_VIDEO_FRAMES);
 }
 
-// TS packets split the parameter sets. The stream information stays the same
-// as from whole access units.
+// TS packets split the parameter sets, and a segment can end in a parameter
+// set. The stream information stays the same as from whole access units.
 TEST(TSParserTest, ThePartsOfTheParameterSetsGiveTheSameStreamInformation)
 {
   for (const VideoCodec* codec : {&H264, &HEVC, &MPEG2})
@@ -752,6 +761,13 @@ TEST(TSParserTest, ThePartsOfTheParameterSetsGiveTheSameStreamInformation)
     {
       SCOPED_TRACE(testing::Message() << "chunk " << chunk);
       EXPECT_EQ(ParseAccessUnits(*codec, accessUnits, chunk), expected);
+      // The first key frame or the next key frame ends the data
+      for (const size_t keyFrame : {size_t{0}, size_t{2}})
+      for (size_t cut = 1; cut < codec->keyFrame.size(); ++cut)
+      {
+        SCOPED_TRACE(testing::Message() << "key frame " << keyFrame << ", cut " << cut);
+        EXPECT_EQ(ParseAccessUnits(*codec, accessUnits, chunk, {{keyFrame, cut}}), expected);
+      }
     }
   }
 }
@@ -1432,16 +1448,18 @@ TEST_F(TSSampleReaderTest, PtsDiffOfAPesHeaderAcrossTwoSegments)
 // The last key frame of a segment can continue in the next segment, with a
 // part of the PES header or with a part of the frame data. The stream cannot
 // read the previous segment again, but a seek still lands on that key frame,
-// also when the seek waits for the next live segment.
+// also when the seek waits for the next live segment. The stream information
+// stays the same, also when the segment ends in a parameter set.
 TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
 {
   constexpr int SPLIT_FRAME{SEGMENT_VIDEO_FRAMES - 1};
-  std::vector<uint8_t> bigKeyFrame{H264.keyFrame};
-  bigKeyFrame.resize(500, 0);
-  // 9 of the 14 bytes of the PES header, or the PES header and a part of the frame
-  for (const size_t firstPacket : {size_t{9}, size_t{184}})
+  // The first packet ends in the PES header, in the parameter sets or in the frame
+  for (const VideoCodec* codec : {&H264, &HEVC, &MPEG2})
+  for (size_t firstPacket = 1; firstPacket <= 184; ++firstPacket)
   {
-    TSWriter writer;
+    std::vector<uint8_t> bigKeyFrame{codec->keyFrame};
+    bigKeyFrame.resize(500, 0);
+    TSWriter writer{*codec};
     writer.WriteTables(true);
     writer.WriteVideo(0, SPLIT_FRAME, 5);
     std::vector<uint8_t> first{writer.Take()};
@@ -1460,8 +1478,9 @@ TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
     for (const uint64_t target : {VideoPts(SPLIT_FRAME - 2), VideoPts(SPLIT_FRAME),
                                   VideoPts(SPLIT_FRAME) + VIDEO_TICKS / 2})
     {
-      SCOPED_TRACE(testing::Message() << "first packet " << firstPacket << ", target "
-                                      << target << (preceeding ? "" : ", not preceeding")
+      SCOPED_TRACE(testing::Message() << codec->name << ", first packet " << firstPacket
+                                      << ", target " << target
+                                      << (preceeding ? "" : ", not preceeding")
                                       << (live ? ", live" : ""));
       const int landing{preceeding && target < VideoPts(SPLIT_FRAME) ? 10
                         : !preceeding && target > VideoPts(SPLIT_FRAME) ? SEGMENT_VIDEO_FRAMES
@@ -1470,6 +1489,9 @@ TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
       if (live && landing < SPLIT_FRAME)
         continue;
       Open(first, Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+      kodi::addon::InputstreamInfo info;
+      info.SetStreamType(INPUTSTREAM_TYPE_VIDEO);
+      ASSERT_TRUE(m_reader->GetInformation(info));
       if (live)
         m_segments->m_waitingForSegment = true;
       else
@@ -1486,6 +1508,7 @@ TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
         m_segments->m_waitingForSegment = false;
         ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
       }
+      EXPECT_FALSE(m_reader->GetInformation(info));
       // The PTS and the PTS diff of each frame
       std::vector<std::pair<uint64_t, int64_t>> read;
       AP4_Size landingSize{m_reader->GetSampleDataSize()};
@@ -1498,6 +1521,7 @@ TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
       EXPECT_EQ(read, expected);
       if (landing == SPLIT_FRAME)
         EXPECT_GE(landingSize, bigKeyFrame.size() - 1);
+      EXPECT_FALSE(m_reader->GetInformation(info));
     }
   }
 }

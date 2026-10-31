@@ -91,7 +91,7 @@ namespace TSDemux
     int64_t         m_PTS;
     bool            m_Interlaced;
 
-    void Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &complete);
+    void Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &complete, bool canContinue);
     void Parse_PPS(uint8_t *buf, int len);
     void Parse_SLH(uint8_t *buf, int len, HDR_NAL hdr, hevc_private::VCL_NAL &vcl);
     void Parse_SPS(uint8_t *buf, int len, HDR_NAL hdr);

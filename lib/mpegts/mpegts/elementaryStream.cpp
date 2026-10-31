@@ -89,6 +89,20 @@ const ElementaryStream::PesStart* ElementaryStream::GetPesStart(const unsigned c
   return NULL;
 }
 
+void ElementaryStream::EndLastFrame(size_t frameStart)
+{
+  // The PTS of a PES belongs to the first frame that starts in the PES, and
+  // HLS puts each video frame in its own PES. So a later PES with a PTS starts
+  // the next frame, and the next data continues that frame.
+  if (es_pts_pointer > frameStart)
+    es_consumed = es_pts_pointer;
+  else
+  {
+    es_consumed = es_len;
+    es_skip_to_pts = true;
+  }
+}
+
 bool ElementaryStream::AppendExtraData(const uint8_t* nal, size_t size)
 {
   uint8_t* ed = stream_info.extra_data + stream_info.extra_data_size;
