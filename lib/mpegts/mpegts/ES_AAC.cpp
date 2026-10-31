@@ -27,6 +27,8 @@ ES_AAC::ES_AAC(uint16_t pes_pid)
   m_PTS                         = 0;
   m_DTS                         = 0;
   m_FrameSize                   = 0;
+  m_FrameDuration               = 0;
+  m_SubFrames                   = 1;
   m_codecProfile = PROFILE_NONE;
   m_SampleRate                  = 0;
   m_Channels                    = 0;
@@ -58,7 +60,7 @@ void ES_AAC::Parse(STREAM_PKT* pkt)
     pkt->pid            = pid;
     pkt->data           = &es_buf[p];
     pkt->size           = m_FrameSize;
-    pkt->duration       = 1024 * 90000 / (!m_SampleRate ? aac_sample_rates[4] : m_SampleRate);
+    pkt->duration       = m_FrameDuration;
     pkt->dts            = m_DTS;
     pkt->pts            = m_PTS;
     pkt->streamChange   = streamChange;
@@ -96,11 +98,16 @@ int ES_AAC::FindHeaders(uint8_t *buf, int buf_size)
       CBitstream bs(buf_ptr, 16 * 8);
       bs.skipBits(11);
       m_FrameSize = bs.readBits(13) + 3;
+      // The frame holds an AudioMuxElement after the 3 header bytes
+      if (m_FrameSize <= 3)
+        return 0;
       if (!ParseLATMAudioMuxElement(&bs))
         return 0;
 
       es_found_frame = true;
-      m_DTS = m_PTS = AudioFramePts(buf_ptr - es_buf, 90000 * 1024 / (!m_SampleRate ? aac_sample_rates[4] : m_SampleRate));
+      // Each sub frame holds 1024 samples
+      m_FrameDuration = static_cast<int>(m_SubFrames * 90000LL * 1024 / (!m_SampleRate ? aac_sample_rates[4] : m_SampleRate));
+      m_DTS = m_PTS = AudioFramePts(buf_ptr - es_buf, m_FrameDuration);
       return -1;
     }
   }
@@ -142,18 +149,26 @@ int ES_AAC::FindHeaders(uint8_t *buf, int buf_size)
       }
 
       int SampleRateIndex = bs.readBits(4);
+      // The indexes 13 to 15 have no sample rate, as in a false sync word
+      if (!aac_sample_rates[SampleRateIndex])
+        return 0;
       bs.skipBits(1); // private
       m_Channels = bs.readBits(3);
       bs.skipBits(4);
 
       m_FrameSize = bs.readBits(13);
-      // The frame length includes the header, a shorter length is corrupt
-      if (m_FrameSize < (noCrc ? 7 : 9))
+      // The frame length includes the header, and a frame holds at least one
+      // raw data block after the header
+      if (m_FrameSize <= (noCrc ? 7 : 9))
         return 0;
-      m_SampleRate    = aac_sample_rates[SampleRateIndex & 0x0F];
+      m_SampleRate    = aac_sample_rates[SampleRateIndex];
+      bs.skipBits(11); // buffer fullness
+      // Each raw data block holds 1024 samples
+      const int rawDataBlocks = bs.readBits(2) + 1;
+      m_FrameDuration = static_cast<int>(rawDataBlocks * 90000LL * 1024 / m_SampleRate);
 
       es_found_frame = true;
-      m_DTS = m_PTS = AudioFramePts(buf_ptr - es_buf, 90000 * 1024 / (!m_SampleRate ? aac_sample_rates[4] : m_SampleRate));
+      m_DTS = m_PTS = AudioFramePts(buf_ptr - es_buf, m_FrameDuration);
       return -1;
     }
   }
@@ -185,7 +200,7 @@ void ES_AAC::ReadStreamMuxConfig(CBitstream *bs)
     LATMGetValue(bs);                      // taraFullness
 
   bs->skipBits(1);                         // allStreamSameTimeFraming = 1
-  bs->skipBits(6);                         // numSubFrames = 0
+  m_SubFrames = bs->readBits(6) + 1;       // numSubFrames
   bs->skipBits(4);                         // numPrograms = 0
 
   // for each program (which there is only on in DVB)

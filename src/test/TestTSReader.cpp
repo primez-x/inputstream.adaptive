@@ -9,6 +9,8 @@
 #include "AdaptiveByteStream.h"
 #include "TestAdaptiveStream.h"
 #include "mpegts/ES_AAC.h"
+#include "mpegts/ES_AC3.h"
+#include "mpegts/ES_MPEGAudio.h"
 #include "mpegts/ES_MPEGVideo.h"
 #include "mpegts/ES_h264.h"
 #include "mpegts/ES_hevc.h"
@@ -16,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <optional>
@@ -888,13 +891,15 @@ TEST(TSParserTest, TheRestOfACopiedLastFrameIsDropped)
   }
 }
 
-// A corrupt ADTS header can give a frame length shorter than the header. The
-// parser skips that header and finds the next frames.
-TEST(TSParserTest, AnAdtsFrameShorterThanItsHeaderIsSkipped)
+// A corrupt ADTS header can give a frame length of the header or less. A frame
+// holds at least one raw data block after the header. The parser skips that
+// header and finds the next frames.
+TEST(TSParserTest, AnAdtsFrameWithoutDataIsSkipped)
 {
   // The length of a header without a CRC, and of a header with a CRC
   for (const auto& [protectionAbsent, length] :
-       {std::pair{true, 0U}, std::pair{true, 6U}, std::pair{false, 8U}})
+       {std::pair{true, 0U}, std::pair{true, 6U}, std::pair{true, 7U}, std::pair{false, 8U},
+        std::pair{false, 9U}})
   {
     SCOPED_TRACE(testing::Message() << "length " << length << (protectionAbsent ? "" : ", CRC"));
     std::vector<uint8_t> data{AacFrame(0)};
@@ -903,7 +908,8 @@ TEST(TSParserTest, AnAdtsFrameShorterThanItsHeaderIsSkipped)
     corrupt[3] = static_cast<uint8_t>(0x80 | (length >> 11));
     corrupt[4] = static_cast<uint8_t>(length >> 3);
     corrupt[5] = static_cast<uint8_t>(((length & 7) << 5) | 0x1F);
-    corrupt.resize(9);
+    corrupt[6] = 0; // Else 0xFF of length 7 and this byte are a sync word
+    corrupt.resize(std::max(length, 9U));
     data.insert(data.end(), corrupt.begin(), corrupt.end());
     for (int i = 2; i < 4; ++i)
     {
@@ -921,6 +927,226 @@ TEST(TSParserTest, AnAdtsFrameShorterThanItsHeaderIsSkipped)
     for (int packets = 0; packets < 10 && stream.GetStreamPacket(&pkt); ++packets)
       read.push_back(pkt.size ? (pkt.data[pkt.size - 2] << 8) | pkt.data[pkt.size - 1] : -1);
     EXPECT_EQ(read, (std::vector<int>{0, 2, 3}));
+  }
+}
+
+// A LATM frame of 3 + 120 bytes with the StreamMuxConfig of AAC LC at 48 kHz
+// with 2 channels and 1 or 2 sub frames. The last two bytes hold the frame index.
+std::vector<uint8_t> LatmFrame(int index, unsigned int length = 120, int subFrames = 1)
+{
+  std::vector<uint8_t> frame{0x56, static_cast<uint8_t>(0xE0 | (length >> 8)),
+                             static_cast<uint8_t>(length),
+                             // useSameStreamMux 0, audioMuxVersion 0, allStreamsSameTimeFraming 1,
+                             // no sub frames, programs or layers, AOT 2, rate index 3,
+                             // channels 2, frameLengthType 0, buffer fullness 0xFF
+                             0x20, static_cast<uint8_t>((subFrames - 1) << 7), 0x11, 0x90,
+                             0x1F, 0xE0};
+  frame.resize(3 + 120, 0);
+  frame[frame.size() - 2] = static_cast<uint8_t>(index >> 8);
+  frame[frame.size() - 1] = static_cast<uint8_t>(index);
+  return frame;
+}
+
+// A LATM frame holds an AudioMuxElement after the 3 header bytes. The parser
+// skips a header with a length of 0 and finds the next frames.
+TEST(TSParserTest, ALatmFrameWithoutDataIsSkipped)
+{
+  std::vector<uint8_t> data;
+  for (int i = 0; i < 4; ++i)
+  {
+    const std::vector<uint8_t> frame{LatmFrame(i, i == 1 ? 0 : 120)};
+    data.insert(data.end(), frame.begin(), frame.end());
+  }
+  TSDemux::ES_AAC stream{AUDIO_PID};
+  stream.stream_type = TSDemux::STREAM_TYPE_AUDIO_AAC;
+  stream.c_pts = stream.c_dts = 90000;
+  stream.StartPes(0, 0);
+  stream.Append(data.data(), data.size(), true);
+  std::vector<std::pair<int, int64_t>> read;
+  TSDemux::STREAM_PKT pkt;
+  while (read.size() < 10 && (stream.GetStreamPacket(&pkt) || stream.GetEndPacket(&pkt)))
+    read.emplace_back(pkt.size == 123 ? (pkt.data[121] << 8) | pkt.data[122] : -1, pkt.pts);
+  EXPECT_EQ(read, (std::vector<std::pair<int, int64_t>>{
+                      {0, 90000}, {2, 90000 + AUDIO_TICKS}, {3, 90000 + 2 * AUDIO_TICKS}}));
+}
+
+struct AudioFrame
+{
+  unsigned int size;
+  int64_t pts;
+  int64_t duration;
+  bool operator==(const AudioFrame& other) const
+  {
+    return size == other.size && pts == other.pts && duration == other.duration;
+  }
+};
+
+std::ostream& operator<<(std::ostream& os, const AudioFrame& frame)
+{
+  return os << "{" << frame.size << ", " << frame.pts << ", " << frame.duration << "}";
+}
+
+// The frames of one PES with the PTS 90000. The data comes in parts of the
+// chunk size, as in TS packets.
+std::vector<AudioFrame> ReadAudioFrames(TSDemux::ElementaryStream& stream,
+                                        const std::vector<uint8_t>& data,
+                                        size_t chunk = SIZE_MAX)
+{
+  stream.c_pts = stream.c_dts = 90000;
+  stream.StartPes(0, 0);
+  std::vector<AudioFrame> read;
+  TSDemux::STREAM_PKT pkt;
+  for (size_t pos = 0; pos < data.size(); pos += chunk)
+  {
+    stream.Append(data.data() + pos, std::min(chunk, data.size() - pos), pos == 0);
+    while (read.size() < 10 && stream.GetStreamPacket(&pkt))
+      read.push_back({static_cast<unsigned int>(pkt.size), pkt.pts, pkt.duration});
+  }
+  while (read.size() < 10 && stream.GetEndPacket(&pkt))
+    read.push_back({static_cast<unsigned int>(pkt.size), pkt.pts, pkt.duration});
+  return read;
+}
+
+// An ADTS frame holds 1 to 4 raw data blocks of 1024 samples, and a LATM
+// frame 1 to 64 sub frames of 1024 samples. An ADTS header without a sample
+// rate, as a false sync word in the data, is no header.
+TEST(TSParserTest, AacFramesHaveTheDurationOfTheirBlocks)
+{
+  for (const int blocks : {1, 2, 4})
+  {
+    SCOPED_TRACE(testing::Message() << "ADTS, " << blocks << " raw data blocks");
+    std::vector<uint8_t> data;
+    for (int i = 0; i < 3; ++i)
+    {
+      std::vector<uint8_t> frame{AacFrame(i)};
+      frame[6] = static_cast<uint8_t>(0xFC | (blocks - 1));
+      data.insert(data.end(), frame.begin(), frame.end());
+      if (i == 0)
+      {
+        // Rate index 13. A buffer fullness of 0 gives no other sync word.
+        frame[2] = 0x74;
+        frame[5] &= 0xE0;
+        frame[6] &= 0x03;
+        data.insert(data.end(), frame.begin(), frame.begin() + 7);
+      }
+    }
+    TSDemux::ES_AAC stream{AUDIO_PID};
+    stream.stream_type = TSDemux::STREAM_TYPE_AUDIO_AAC;
+    const int64_t duration{blocks * static_cast<int64_t>(AUDIO_TICKS)};
+    EXPECT_EQ(ReadAudioFrames(stream, data),
+              (std::vector<AudioFrame>{{127, 90000, duration},
+                                       {127, 90000 + duration, duration},
+                                       {127, 90000 + 2 * duration, duration}}));
+  }
+  for (const int subFrames : {1, 2})
+  {
+    SCOPED_TRACE(testing::Message() << "LATM, " << subFrames << " sub frames");
+    std::vector<uint8_t> data;
+    for (int i = 0; i < 3; ++i)
+    {
+      const std::vector<uint8_t> frame{LatmFrame(i, 120, subFrames)};
+      data.insert(data.end(), frame.begin(), frame.end());
+    }
+    TSDemux::ES_AAC stream{AUDIO_PID};
+    stream.stream_type = TSDemux::STREAM_TYPE_AUDIO_AAC;
+    const int64_t duration{subFrames * static_cast<int64_t>(AUDIO_TICKS)};
+    EXPECT_EQ(ReadAudioFrames(stream, data),
+              (std::vector<AudioFrame>{{123, 90000, duration},
+                                       {123, 90000 + duration, duration},
+                                       {123, 90000 + 2 * duration, duration}}));
+  }
+}
+
+// The header gives the size, the duration and the channels of an MPEG audio
+// frame. A Layer I frame holds 384 samples, an MPEG-2 or MPEG-2.5 Layer III
+// frame 576 samples and the other frames 1152 samples.
+TEST(TSParserTest, MpegAudioFramesHaveTheSizeAndDurationOfTheirHeader)
+{
+  struct Format
+  {
+    const char* name;
+    uint8_t version; // 3 MPEG-1, 2 MPEG-2, 0 MPEG-2.5
+    uint8_t layer; // 3 Layer I, 2 Layer II, 1 Layer III
+    uint8_t bitrateIndex;
+    uint8_t sampleRateIndex;
+    unsigned int size;
+    int64_t duration;
+  };
+  for (const Format& format : {
+           // 128 kbit/s at 48 kHz
+           Format{"MPEG-1 Layer I", 3, 3, 4, 1, 128, 720},
+           Format{"MPEG-1 Layer II", 3, 2, 8, 1, 384, 2160},
+           Format{"MPEG-1 Layer III", 3, 1, 9, 1, 384, 2160},
+           // 64 kbit/s at 24 kHz, and at 12 kHz
+           Format{"MPEG-2 Layer II", 2, 2, 8, 1, 384, 4320},
+           Format{"MPEG-2 Layer III", 2, 1, 8, 1, 192, 2160},
+           Format{"MPEG-2.5 Layer III", 0, 1, 8, 1, 384, 4320},
+       })
+  for (const int channels : {1, 2})
+  {
+    SCOPED_TRACE(testing::Message() << format.name << ", " << channels << " channels");
+    std::vector<uint8_t> frame{0xFF,
+                               static_cast<uint8_t>(0xE1 | (format.version << 3) |
+                                                    (format.layer << 1)),
+                               static_cast<uint8_t>((format.bitrateIndex << 4) |
+                                                    (format.sampleRateIndex << 2)),
+                               static_cast<uint8_t>(channels == 1 ? 0xC0 : 0x00)};
+    frame.resize(format.size, 0x55);
+    std::vector<uint8_t> data;
+    for (int i = 0; i < 3; ++i)
+      data.insert(data.end(), frame.begin(), frame.end());
+    TSDemux::ES_MPEG2Audio stream{AUDIO_PID};
+    const unsigned int size{format.size};
+    const int64_t duration{format.duration};
+    EXPECT_EQ(ReadAudioFrames(stream, data),
+              (std::vector<AudioFrame>{{size, 90000, duration},
+                                       {size, 90000 + duration, duration},
+                                       {size, 90000 + 2 * duration, duration}}));
+    EXPECT_EQ(stream.stream_info.channels, channels);
+  }
+}
+
+// An E-AC-3 frame holds 1, 2, 3 or 6 blocks of 256 samples. A dependent frame
+// extends the channels of the frame before, at the same time, so the decoder
+// needs both frames in one packet.
+TEST(TSParserTest, EAc3FramesHaveTheDurationOfTheirBlocks)
+{
+  const auto eac3Frame = [](int frameType, int blocksCode)
+  {
+    // 128 bytes, 48 kHz, 2 channels, bsid 16
+    constexpr unsigned int words{64};
+    std::vector<uint8_t> frame{0x0B,
+                               0x77,
+                               static_cast<uint8_t>((frameType << 6) | ((words - 1) >> 8)),
+                               static_cast<uint8_t>(words - 1),
+                               static_cast<uint8_t>((blocksCode << 4) | 0x04),
+                               0x80};
+    frame.resize(2 * words, 0x55);
+    return frame;
+  };
+  constexpr int64_t BLOCK{480}; // 256 samples at 48 kHz
+  for (const auto& [blocksCode, blocks] : {std::pair{0, 1}, std::pair{1, 2}, std::pair{2, 3},
+                                           std::pair{3, 6}})
+  {
+    SCOPED_TRACE(testing::Message() << blocks << " blocks");
+    // The first dependent frame belongs to a frame before the data
+    std::vector<uint8_t> data;
+    for (const int frameType : {1, 0, 1, 0, 1, 0})
+    {
+      const std::vector<uint8_t> frame{eac3Frame(frameType, blocksCode)};
+      data.insert(data.end(), frame.begin(), frame.end());
+    }
+    const int64_t duration{blocks * BLOCK};
+    // The data of a frame, or of the header after the frame, can come later
+    for (const size_t chunk : {SIZE_MAX, size_t{130}, size_t{131}, size_t{184}})
+    {
+      SCOPED_TRACE(testing::Message() << "parts of " << chunk << " bytes");
+      TSDemux::ES_AC3 stream{AUDIO_PID};
+      EXPECT_EQ(ReadAudioFrames(stream, data, chunk),
+                (std::vector<AudioFrame>{{256, 90000, duration},
+                                         {256, 90000 + duration, duration},
+                                         {128, 90000 + 2 * duration, duration}}));
+    }
   }
 }
 

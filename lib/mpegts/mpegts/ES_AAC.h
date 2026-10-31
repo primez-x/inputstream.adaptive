@@ -22,6 +22,8 @@ namespace TSDemux
     int         m_Channels;
     int         m_BitRate;
     int         m_FrameSize;
+    int         m_FrameDuration;      /* 90 kHz ticks */
+    int         m_SubFrames;          /* LATM: frames in an AudioMuxElement */
 
     int64_t     m_PTS;                /* pts of the current frame */
     int64_t     m_DTS;                /* dts of the current frame */

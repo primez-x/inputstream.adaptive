@@ -14,6 +14,7 @@
 using namespace TSDemux;
 
 #define AC3_HEADER_SIZE 7
+#define EAC3_DEPENDENT_HEADER_SIZE 6 // Up to bsid
 
 /** Channel mode (audio coding mode) */
 typedef enum
@@ -99,6 +100,8 @@ ES_AC3::ES_AC3(uint16_t pid)
   m_PTS                       = 0;
   m_DTS                       = 0;
   m_FrameSize                 = 0;
+  m_FrameDuration             = 0;
+  m_Dependent                 = false;
   m_SampleRate                = 0;
   m_Channels                  = 0;
   m_BitRate                   = 0;
@@ -123,19 +126,55 @@ void ES_AC3::Parse(STREAM_PKT* pkt)
 
   if (es_found_frame && l >= m_FrameSize)
   {
+    // A dependent frame without the frame before, as at the start, is no frame
+    if (m_Dependent)
+    {
+      es_consumed = p + m_FrameSize;
+      es_parsed = es_consumed;
+      es_found_frame = false;
+      return;
+    }
+    // The dependent frames after a frame extend the channels of that frame and
+    // belong to the frame, as in FFmpeg
+    int size = m_FrameSize;
+    while (true)
+    {
+      const int dependent = l - size >= EAC3_DEPENDENT_HEADER_SIZE
+                                ? DependentFrameSize(es_buf + p + size)
+                                : -1;
+      if (dependent > 0 && l - size >= dependent)
+        size += dependent;
+      else if (dependent && !es_end_of_data)
+        return; // The data of the next header or of the dependent frame follows
+      else
+        break;
+    }
     bool streamChange = SetAudioInformation(m_Channels, m_SampleRate, m_BitRate, 0, 0);
     pkt->pid            = pid;
     pkt->data           = &es_buf[p];
-    pkt->size           = m_FrameSize;
-    pkt->duration       = 90000 * 1536 / m_SampleRate;
+    pkt->size           = size;
+    pkt->duration       = m_FrameDuration;
     pkt->dts            = m_DTS;
     pkt->pts            = m_PTS;
     pkt->streamChange   = streamChange;
 
-    es_consumed = p + m_FrameSize;
+    es_consumed = p + size;
     es_parsed = es_consumed;
     es_found_frame = false;
   }
+}
+
+int ES_AC3::DependentFrameSize(const uint8_t* buf)
+{
+  // The sync word, the frame type, the frame size, and bsid 11 to 16 of E-AC-3
+  if (buf[0] != 0x0b || buf[1] != 0x77)
+    return 0;
+  CBitstream bs(const_cast<uint8_t*>(buf) + 2, (EAC3_DEPENDENT_HEADER_SIZE - 2) * 8);
+  const int bsid = bs.showBits(29) & 0x1F;
+  if (bsid <= 10 || bsid > 16 || bs.readBits(2) != EAC3_FRAME_TYPE_DEPENDENT)
+    return 0;
+  bs.skipBits(3); // substreamid
+  return (bs.readBits(11) + 1) << 1;
 }
 
 int ES_AC3::FindHeaders(uint8_t *buf, int buf_size)
@@ -188,6 +227,8 @@ int ES_AC3::FindHeaders(uint8_t *buf, int buf_size)
       m_BitRate     = (AC3BitrateTable[frmsizecod>>1] * 1000) >> srShift;
       m_Channels    = AC3ChannelsTable[acmod] + lfeon;
       m_FrameSize   = AC3FrameSizeTable[frmsizecod][fscod] * 2;
+      m_FrameDuration = 90000 * 1536 / m_SampleRate;
+      m_Dependent = false;
     }
     else
     {
@@ -222,9 +263,12 @@ int ES_AC3::FindHeaders(uint8_t *buf, int buf_size)
 
       m_BitRate  = (uint32_t)(8.0 * m_FrameSize * m_SampleRate / (numBlocks * 256.0));
       m_Channels = AC3ChannelsTable[channelMode] + lfeon;
+      m_FrameDuration = 90000 * numBlocks * 256 / m_SampleRate;
+      m_Dependent = frametype == EAC3_FRAME_TYPE_DEPENDENT;
     }
     es_found_frame = true;
-    m_DTS = m_PTS = AudioFramePts(buf - es_buf, 90000 * 1536 / m_SampleRate);
+    if (!m_Dependent)
+      m_DTS = m_PTS = AudioFramePts(buf - es_buf, m_FrameDuration);
     return -1;
   }
   return 0;

@@ -250,6 +250,22 @@ TEST_F(ADTSSampleReaderTest, SeekWithoutTimestampEnds)
 }
 
 // An AC-3 frame always holds 6 blocks of 256 samples, for any channel count.
+// An ADTS frame holds 1 to 4 raw data blocks of 1024 samples
+TEST_F(ADTSSampleReaderTest, AacFramesHoldTheirRawDataBlocks)
+{
+  for (const uint8_t blocks : {1, 2, 4})
+  {
+    SCOPED_TRACE(static_cast<int>(blocks));
+    std::vector<uint8_t> frame{AacFrame()};
+    frame[6] = static_cast<uint8_t>(0xFC | (blocks - 1));
+    OpenSegment(Segment(frame, BASE_PTS), AacTime(0));
+
+    ASSERT_TRUE(m_reader->TimeSeek(FrameTime(BASE_PTS, 100, blocks * 1024, 44100), false));
+    EXPECT_EQ(m_reader->PTS(), FrameTime(BASE_PTS, 100, blocks * 1024, 44100));
+    EXPECT_EQ(FrameIndex(), 100);
+  }
+}
+
 TEST_F(ADTSSampleReaderTest, Ac3StereoFramesHold1536Samples)
 {
   OpenSegment(Segment(Ac3Frame(0x40), BASE_PTS), AacTime(0));

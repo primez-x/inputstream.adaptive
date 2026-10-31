@@ -32,6 +32,7 @@ ES_MPEG2Audio::ES_MPEG2Audio(uint16_t pid)
   m_PTS                       = 0;
   m_DTS                       = 0;
   m_FrameSize                 = 0;
+  m_FrameDuration             = 0;
   m_SampleRate                = 0;
   m_Channels                  = 0;
   m_BitRate                   = 0;
@@ -60,7 +61,7 @@ void ES_MPEG2Audio::Parse(STREAM_PKT* pkt)
     pkt->pid            = pid;
     pkt->data           = &es_buf[p];
     pkt->size           = m_FrameSize;
-    pkt->duration       = 90000 * 1152 / m_SampleRate;
+    pkt->duration       = m_FrameDuration;
     pkt->dts            = m_DTS;
     pkt->pts            = m_PTS;
     pkt->streamChange   = streamChange;
@@ -112,18 +113,32 @@ int ES_MPEG2Audio::FindHeaders(uint8_t *buf, int buf_size)
     bs.skipBits(1); // private bit
     int channel_mode = bs.readBits(2);
 
-    if (channel_mode == 11)
+    if (channel_mode == 3)
       m_Channels = 1;
     else
       m_Channels = 2;
 
+    // An MPEG-2 or MPEG-2.5 Layer III frame holds half the samples
+    int samples;
     if (layer == 1)
+    {
       m_FrameSize = (12 * m_BitRate / m_SampleRate + padding) * 4;
+      samples = 384;
+    }
+    else if (layer == 3 && mpeg2)
+    {
+      m_FrameSize = 72 * m_BitRate / m_SampleRate + padding;
+      samples = 576;
+    }
     else
+    {
       m_FrameSize = 144 * m_BitRate / m_SampleRate + padding;
+      samples = 1152;
+    }
+    m_FrameDuration = 90000 * samples / m_SampleRate;
 
     es_found_frame = true;
-    m_DTS = m_PTS = AudioFramePts(buf - es_buf, 90000 * 1152 / m_SampleRate);
+    m_DTS = m_PTS = AudioFramePts(buf - es_buf, m_FrameDuration);
     return -1;
   }
   return 0;

@@ -208,7 +208,8 @@ bool ADTSFrame::ParseAacHeader(AP4_ByteStream* stream, ADTSFrameInfo& frameInfo)
 
   frameInfo.m_codecProfile = frame.m_Info.m_Profile;
   frameInfo.m_frameSize = frame.m_Info.m_FrameLength + AP4_ADTS_HEADER_SIZE;
-  frameInfo.m_frameCount = 1024;
+  // number_of_raw_data_blocks_in_frame: 1 to 4 raw data blocks of 1024 samples
+  frameInfo.m_frameCount = 1024u * ((buffer.GetData()[6] & 0x3u) + 1);
   frameInfo.m_sampleRate = frame.m_Info.m_SamplingFrequency;
   frameInfo.m_channels = frame.m_Info.m_ChannelConfiguration;
   return true;

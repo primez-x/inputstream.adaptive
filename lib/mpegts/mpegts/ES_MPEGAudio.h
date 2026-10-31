@@ -20,6 +20,7 @@ namespace TSDemux
     int         m_Channels;
     int         m_BitRate;
     int         m_FrameSize;
+    int         m_FrameDuration;      /* 90 kHz ticks */
 
     int64_t     m_PTS;
     int64_t     m_DTS;

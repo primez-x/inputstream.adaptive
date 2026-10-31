@@ -25,7 +25,10 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix a seek in a TS stream to a key frame whose picture PES starts in the next segment, which returned that key frame twice
 - Fix a live seek in a TS stream that waited more than once for the next segment, which lost audio frames of an audio PES across the two segments
 - Fix TS audio in PES packets without a PTS at the start and after a seek, which had no PTS up to the next PES with a PTS, also in the next segment, and could not be the target of a seek, and a key frame in a PES without a PTS after a seek, which took the PTS of a later frame
-- Fix a TS AAC stream with a corrupt ADTS header whose frame length is shorter than the header, which stopped the playback in an endless loop or sent a corrupt frame
+- Fix a TS AAC stream with a corrupt ADTS or LATM header whose frame length leaves no frame data, which stopped the playback in an endless loop or sent an empty frame that moved the audio clock, and an ADTS sync word in the data with no valid sample rate, which could hide the next frames
+- Fix MPEG-2 and MPEG-2.5 Layer III TS audio (MP3 at 24 kHz or less), which joined each two frames into one sample with the wrong timestamps, the timestamps of Layer I TS audio, and the channel count of mono MPEG TS audio
+- Fix the timestamps of TS E-AC-3 frames with fewer than 6 blocks, and of 7.1 channel TS E-AC-3, and send both substreams of a frame as one sample
+- Fix the timestamps of AAC frames with more than one raw data block in TS and HLS packed audio, and of LATM frames with more than one sub frame
 - Fix the segment times of HLS streams with EXTINF durations finer than 1 ms, which drifted from the media time (0.24 s after one hour of a YouTube stream), so a seek near a segment start could continue at the next segment
 
 v21.5.25-p3i.3 (2026-10-30)

@@ -20,11 +20,15 @@ namespace TSDemux
     int         m_Channels;
     int         m_BitRate;
     int         m_FrameSize;
+    int         m_FrameDuration;      /* 90 kHz ticks */
+    bool        m_Dependent;          /* E-AC-3 dependent frame */
 
     int64_t     m_PTS;                /* pts of the current frame */
     int64_t     m_DTS;                /* dts of the current frame */
 
     int FindHeaders(uint8_t *buf, int buf_size);
+    /* The size of the E-AC-3 dependent frame at buf, or 0 */
+    static int DependentFrameSize(const uint8_t* buf);
 
   public:
     ES_AC3(uint16_t pid);
