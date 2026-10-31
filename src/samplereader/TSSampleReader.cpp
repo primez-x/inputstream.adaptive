@@ -75,7 +75,9 @@ AP4_Result CTSSampleReader::ReadSample()
       return EndOfData();
   }
 
-  if (ReadPacket())
+  // At the end of the stream, the frames left in the buffers follow
+  if (ReadPacket() ||
+      (!(m_adByteStream && m_adByteStream->waitingForSegment()) && ReadEndPacket()))
   {
     //! @todo: there is something wrong on pts calculation,
     //! m_ptsOffs have a value in seconds and so the substraction "m_pts - m_ptsOffs" looks to be inconsistent,
@@ -117,6 +119,11 @@ AP4_Result CTSSampleReader::EndOfData()
   return AP4_ERROR_EOS;
 }
 
+bool CTSSampleReader::IsSegmentEnd(uint64_t position)
+{
+  return m_adByteStream && m_adByteStream->IsSegmentEnd(position);
+}
+
 void CTSSampleReader::SetPTSOffset(uint64_t offset)
 {
   m_ptsOffs = offset;
@@ -151,7 +158,9 @@ bool CTSSampleReader::TimeSeek(uint64_t pts, bool preceeding)
 
 bool CTSSampleReader::Seek(uint64_t pts)
 {
-  if (TSReader::SeekTime((pts * 9) / 100, m_seekPreceeding))
+  // PTS() rounds down to microseconds, so the seek time rounds up to the PTS
+  // of the frame
+  if (TSReader::SeekTime((pts * 9 + 99) / 100, m_seekPreceeding))
   {
     m_seekTime.reset();
     return true;

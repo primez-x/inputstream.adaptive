@@ -1294,6 +1294,26 @@ size_t adaptive::AdaptiveStream::getSegmentPos()
   return current_rep_->Timeline().GetPos(current_rep_->current_segment_);
 }
 
+bool AdaptiveStream::IsSegmentEnd(uint64_t position)
+{
+  if (state_ != RUNNING)
+    return false;
+
+  std::unique_lock<std::mutex> lckrw(thread_data_->mutex_rw_);
+  if (valid_segment_buffers_ == 0)
+    return false;
+
+  // The worker downloads the segments in order, so the current segment is in
+  // download while it is the only valid one, see ensureSegment
+  const uint64_t segmentStart{absolute_position_ - segment_read_pos_};
+  while (position >= segmentStart + segment_buffers_[0]->buffer.size() && worker_processing_ &&
+         valid_segment_buffers_ == 1)
+  {
+    thread_data_->signal_rw_.wait(lckrw);
+  }
+  return position >= segmentStart + segment_buffers_[0]->buffer.size();
+}
+
 bool AdaptiveStream::waitingForSegment() const
 {
   if ((m_tree->HasManifestUpdates() || m_tree->HasManifestUpdatesSegs()) && state_ == RUNNING)

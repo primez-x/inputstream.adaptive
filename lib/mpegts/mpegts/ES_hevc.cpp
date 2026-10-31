@@ -61,6 +61,21 @@ void ES_hevc::Parse(STREAM_PKT* pkt)
   es_parsed = p;
   m_StartCode = startcode;
 
+  // The last NAL unit ends at the end of the data, and so does the last frame
+  if (!frameComplete && es_end_of_data)
+  {
+    if (m_LastStartPos != -1)
+    {
+      Parse_HEVC(frame_ptr + m_LastStartPos, es_len - frame_ptr - m_LastStartPos, frameComplete);
+      m_LastStartPos = -1;
+    }
+    if (!frameComplete && es_found_frame)
+    {
+      frameComplete = true;
+      es_consumed = es_len;
+    }
+  }
+
   if (frameComplete)
   {
     if (!m_NeedSPS)

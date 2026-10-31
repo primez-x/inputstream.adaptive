@@ -123,6 +123,12 @@ enum class EVENT_TYPE
     uint64_t GetCurrentPTSOffset() { return currentPTSOffset_; };
     uint64_t GetAbsolutePTSOffset() { return absolutePTSOffset_; };
     bool waitingForSegment() const;
+    /*!
+     * \brief True if the data of the current segment ends at the position, so
+     *        a read at the position switches to the next segment. Waits while
+     *        the download of the current segment continues at the position.
+     */
+    bool IsSegmentEnd(uint64_t position);
     void FixateInitialization(bool on);
     void SetSegmentFileOffset(uint64_t offset) { m_segmentFileOffset = offset; };
     bool StreamChanged() { return m_startEvent == EVENT_TYPE::REP_CHANGE; }

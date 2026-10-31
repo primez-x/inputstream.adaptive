@@ -102,6 +102,7 @@ namespace TSDemux
     STREAM_INFO stream_info;
 
     bool GetStreamPacket(STREAM_PKT* pkt);
+    bool GetEndPacket(STREAM_PKT* pkt); ///< Like GetStreamPacket(), but the buffer ends with the end of the last frame
     virtual void Parse(STREAM_PKT* pkt);
 
     void MarkPes();               ///< Mark the start of the current PES in the buffer
@@ -126,6 +127,7 @@ namespace TSDemux
     size_t es_consumed;           ///< Consumed payload. Will be erased on next append
     size_t es_pts_pointer;        ///< Position in buffer where current PTS becomes applicable
     size_t es_parsed;             ///< Parser: Last processed position in buffer
+    bool   es_end_of_data;        ///< Parser: In GetEndPacket(), the last frame ends at the end of the buffer
     struct PesStart
     {
       size_t offset;              ///< Position in buffer where the PES data starts

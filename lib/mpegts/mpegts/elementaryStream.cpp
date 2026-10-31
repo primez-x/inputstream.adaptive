@@ -32,6 +32,7 @@ ElementaryStream::ElementaryStream(uint16_t pes_pid)
   , es_consumed(0)
   , es_pts_pointer(0)
   , es_parsed(0)
+  , es_end_of_data(false)
   , es_pes_start_pending(false)
   , es_pes_start_position(0)
   , es_marked(false)
@@ -250,6 +251,14 @@ bool ElementaryStream::GetStreamPacket(STREAM_PKT* pkt)
   if (pkt->data)
     return true;
   return false;
+}
+
+bool ElementaryStream::GetEndPacket(STREAM_PKT* pkt)
+{
+  es_end_of_data = true;
+  const bool ret = GetStreamPacket(pkt);
+  es_end_of_data = false;
+  return ret;
 }
 
 void ElementaryStream::Parse(STREAM_PKT* pkt)

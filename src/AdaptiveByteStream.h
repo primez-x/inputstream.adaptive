@@ -49,6 +49,7 @@ public:
   void AddReference() override{};
   void Release() override{};
   bool waitingForSegment() const;
+  bool IsSegmentEnd(AP4_Position position);
   void FixateInitialization(bool on);
   void SetSegmentFileOffset(uint64_t offset);
 

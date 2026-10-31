@@ -51,6 +51,11 @@ bool CAdaptiveByteStream::waitingForSegment() const
   return m_adStream->waitingForSegment();
 }
 
+bool CAdaptiveByteStream::IsSegmentEnd(AP4_Position position)
+{
+  return m_adStream->IsSegmentEnd(position);
+}
+
 void CAdaptiveByteStream::FixateInitialization(bool on)
 {
   m_adStream->FixateInitialization(on);

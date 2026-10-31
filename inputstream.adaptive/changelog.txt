@@ -2,6 +2,8 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix the timing offset of HLS audio, TS video and WebM streams after each segment change, which was one or more frames wrong until the next seek
 - Fix a seek in a live TS stream that aligned the other streams to the time before the seek when the next segment was not available yet, and end a TS stream after a seek past the end
 - Fix a seek in a TS stream that continued at the key frame after the seek time, or at the next segment, instead of at the key frame before the seek time
+- Fix a seek in a TS stream to the last frames of a segment, or to a time between two frames, which continued at a later key frame
+- Fix the end of a TS stream, which did not play the last video frames and the audio of the last PES
 
 v21.5.25-p3i.3 (2026-10-30)
 - Fix a seek in a live HLS stream that ended the audio when the next audio segment was not available yet

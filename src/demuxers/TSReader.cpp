@@ -13,6 +13,7 @@
 #include "utils/Utils.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <stdlib.h>
 
 #include <bento4/Ap4ByteStream.h>
@@ -210,10 +211,30 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
 {
   const bool hasVideo{HasVideo()};
   uint64_t lastRecovery(static_cast<uint64_t>(m_startPos));
+  // The stream cannot seek back into a segment after a read of the next
+  // segment. So the scan reads the frames left in the buffers at the end of a
+  // segment, before the next segment.
+  uint64_t segmentEnd{0}; // The end time of the frames read
+  bool nextSegment{false};
   while (m_pkt.pts == PTS_UNSET || !preceeding || static_cast<uint64_t>(m_pkt.pts) < timeInTs)
   {
-    if (!ReadPacket())
-      return false;
+    m_stopAtSegmentEnd = !nextSegment;
+    const bool read{ReadPacket()};
+    m_stopAtSegmentEnd = false;
+    if (!read)
+    {
+      if (nextSegment || !IsSegmentEnd(m_AVContext->GetPosition()))
+        return false;
+      if (preceeding && timeInTs < segmentEnd)
+        break;
+      // The seek time is after the frames of this segment
+      nextSegment = true;
+      lastRecovery = m_AVContext->GetPosition();
+      continue;
+    }
+    nextSegment = false;
+    if (m_pkt.pts != PTS_UNSET)
+      segmentEnd = std::max(segmentEnd, static_cast<uint64_t>(m_pkt.pts) + m_pkt.duration);
     // The demuxer emits a frame only after a later PES starts. The frame
     // starts in the PES where the frame data starts.
     const TSDemux::ElementaryStream* stream{m_AVContext->GetStream(m_pkt.pid)};
@@ -222,6 +243,9 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
       continue;
     if (!hasVideo || m_pkt.recoveryPoint || thisFrameStart == m_startPos)
     {
+      // A preceeding seek lands on a frame at or before the seek time
+      if (preceeding && static_cast<uint64_t>(m_pkt.pts) > timeInTs)
+        break;
       lastRecovery = thisFrameStart;
       if (!preceeding && static_cast<uint64_t>(m_pkt.pts) >= timeInTs)
         break;
@@ -244,6 +268,9 @@ bool TSReader::ReadPacket(bool scanStreamInfo)
 
   while (!ret)
   {
+    if (m_stopAtSegmentEnd && IsSegmentEnd(m_AVContext->GetPosition()))
+      return ReadEndPacket();
+
     int errorCode;
     if ((errorCode = m_AVContext->TSResync()) != TSDemux::AVCONTEXT_CONTINUE)
     {
@@ -308,6 +335,20 @@ bool TSReader::ReadPacket(bool scanStreamInfo)
       m_AVContext->GoNext();
   }
   return true;
+}
+
+bool TSReader::ReadEndPacket()
+{
+  for (auto& tsInfo : m_streamInfos)
+  {
+    if (tsInfo.m_enabled && tsInfo.m_stream->GetEndPacket(&m_pkt))
+    {
+      if (m_pkt.streamChange)
+        HandleStreamChange(m_pkt.pid);
+      return true;
+    }
+  }
+  return false;
 }
 
 bool TSReader::GetPacket()

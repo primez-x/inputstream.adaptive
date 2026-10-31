@@ -85,6 +85,12 @@ void ES_MPEG2Video::Parse(STREAM_PKT *pkt)
   es_parsed = p;
   m_StartCode = startcode;
 
+  if (!frameComplete && es_end_of_data && es_found_frame)
+  {
+    frameComplete = true;
+    es_consumed = es_len;
+  }
+
   if (frameComplete)
   {
     if (!m_NeedSPS && !m_NeedIFrame)

@@ -130,6 +130,12 @@ void ES_h264::Parse(STREAM_PKT* pkt)
   es_parsed = p;
   m_StartCode = startcode;
 
+  if (!frameComplete && es_end_of_data && es_found_frame)
+  {
+    frameComplete = true;
+    es_consumed = es_len;
+  }
+
   if (frameComplete)
   {
     if (!m_NeedSPS && !m_NeedIFrame)
@@ -227,7 +233,7 @@ int ES_h264::Parse_H264(uint32_t startcode, int buf_ptr, bool &complete)
       return 0;
     }
     // need at least 32 bytes for parsing nal
-    if (len < 32)
+    if (len < 32 && !es_end_of_data)
       return -1;
     h264_private::VCL_NAL vcl;
     memset(&vcl, 0, sizeof(h264_private::VCL_NAL));
@@ -281,7 +287,7 @@ int ES_h264::Parse_H264(uint32_t startcode, int buf_ptr, bool &complete)
       return -1;
     }
     // TODO: how big is SPS?
-    if (len < 64)
+    if (len < 64 && !es_end_of_data)
       return -1;
 
     if (!Parse_SPS(buf, len, true))
@@ -300,7 +306,7 @@ int ES_h264::Parse_H264(uint32_t startcode, int buf_ptr, bool &complete)
       return -1;
     }
     // TODO: how big is PPS
-    if (len < 64)
+    if (len < 64 && !es_end_of_data)
       return -1;
     if (!Parse_PPS(buf, len))
       return 0;

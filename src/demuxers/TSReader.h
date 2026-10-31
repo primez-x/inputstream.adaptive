@@ -34,6 +34,12 @@ public:
 
   bool GetInformation(kodi::addon::InputstreamInfo& info);
   bool ReadPacket(bool streamInfo = false);
+  /*!
+   * \brief Read a frame left in the buffers when no data follows. The demuxer
+   *        emits a PES only when the next PES starts, and a video parser emits
+   *        a frame only when the next frame starts.
+   */
+  bool ReadEndPacket();
 
   /*!
    * \brief Wait for the PTS of the first PES of a new segment.
@@ -58,6 +64,12 @@ public:
   const AP4_Size GetPacketSize() const { return static_cast<AP4_Size>(m_pkt.size); }
   const INPUTSTREAM_TYPE GetStreamType() const;
 
+protected:
+  /*!
+   * \brief True if the data of the current segment ends at the position
+   */
+  virtual bool IsSegmentEnd(uint64_t position) { return false; }
+
 private:
   bool GetPacket();
   bool HasVideo() const;
@@ -73,6 +85,7 @@ private:
   AP4_Position m_startPos;
   uint32_t m_requiredMask;
   uint32_t m_typeMask;
+  bool m_stopAtSegmentEnd{false}; // ReadPacket fails at the end of the current segment
   bool m_segmentStart{false};
   uint64_t m_segmentPts{PTS_UNSET};
   uint16_t m_segmentPid{0};

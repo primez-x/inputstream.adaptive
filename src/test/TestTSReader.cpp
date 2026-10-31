@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -83,28 +84,71 @@ std::vector<uint8_t> AacFrame(int index)
   return frame;
 }
 
-// A 16x16 H.264 IDR access unit (AUD, SPS, PPS and slice) and a P-frame
-// access unit (AUD and slice). The parser reads an SPS or a PPS only with 64
-// bytes after the start code and a slice header only with 32 bytes. Trailing
-// zero bytes give the short access units the size of real ones.
+// The parser reads an H.264 SPS or PPS only with 64 bytes after the start
+// code and a slice header only with 32 bytes. Trailing zero bytes give the
+// short access units the size of real ones.
 std::vector<uint8_t> PadAccessUnit(std::vector<uint8_t> frame)
 {
   frame.resize(frame.size() + 64, 0);
   return frame;
 }
 
-const std::vector<uint8_t> H264_IDR_FRAME{PadAccessUnit(
-    {0x00, 0x00, 0x00, 0x01, 0x09, 0x10, 0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0,
-     0x0a, 0xda, 0x7b, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03,
-     0x03, 0xc0, 0xf1, 0x22, 0x6a, 0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x0f, 0xc8,
-     0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x3a, 0x26, 0x28, 0x00, 0x09, 0x02, 0xe0})};
-const std::vector<uint8_t> H264_P_FRAME{PadAccessUnit(
-    {0x00, 0x00, 0x00, 0x01, 0x09, 0x30, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x20, 0x26, 0x94})};
+// The PMT stream type and the access units of a key frame and of a P-frame
+struct VideoCodec
+{
+  const char* name;
+  uint8_t streamType;
+  std::vector<uint8_t> keyFrame;
+  std::vector<uint8_t> frame;
+};
+
+// 16x16 H.264: AUD, SPS, PPS and IDR slice; AUD and P slice
+const VideoCodec H264{
+    "H.264", 0x1B,
+    PadAccessUnit(
+        {0x00, 0x00, 0x00, 0x01, 0x09, 0x10, 0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0,
+         0x0a, 0xda, 0x7b, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03,
+         0x03, 0xc0, 0xf1, 0x22, 0x6a, 0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x0f, 0xc8,
+         0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x3a, 0x26, 0x28, 0x00, 0x09, 0x02, 0xe0}),
+    PadAccessUnit(
+        {0x00, 0x00, 0x00, 0x01, 0x09, 0x30, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x20, 0x26, 0x94})};
+
+// 64x64 HEVC: AUD, VPS, SPS, PPS and IDR slice; AUD and P slice
+const VideoCodec HEVC{
+    "HEVC", 0x24,
+    {
+     0x00, 0x00, 0x00, 0x01, 0x46, 0x01, 0x10, 0x00, 0x00, 0x00, 0x01, 0x40, 0x01,
+     0x0c, 0x01, 0xff, 0xff, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00,
+     0x03, 0x00, 0x00, 0x03, 0x00, 0x1e, 0x92, 0x80, 0x90, 0x00, 0x00, 0x00, 0x01,
+     0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00, 0x03,
+     0x00, 0x00, 0x03, 0x00, 0x1e, 0xa0, 0x20, 0x81, 0x05, 0x96, 0x4a, 0x92, 0x4c,
+     0xaf, 0x01, 0x68, 0x08, 0x00, 0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x00,
+     0xf0, 0x40, 0x00, 0x00, 0x00, 0x01, 0x44, 0x01, 0xc1, 0x72, 0xb4, 0x22, 0x40,
+     0x00, 0x00, 0x01, 0x28, 0x01, 0xaf, 0x08, 0x60, 0xf9, 0x2a, 0x5c, 0xff, 0xfb,
+     0xcf, 0xe5, 0x62, 0xe8},
+    {
+     0x00, 0x00, 0x00, 0x01, 0x46, 0x01, 0x30, 0x00, 0x00, 0x01, 0x02, 0x01, 0xd0,
+     0x09, 0x7e, 0x10, 0xc6, 0x10, 0xc0, 0xfb, 0x8c}};
+
+// 16x16 MPEG-2: sequence header, extensions, GOP and I picture; P picture
+const VideoCodec MPEG2{
+    "MPEG-2", 0x02,
+    {
+     0x00, 0x00, 0x01, 0xb3, 0x01, 0x00, 0x10, 0x15, 0xff, 0xff, 0xe0, 0x18, 0x00,
+     0x00, 0x01, 0xb5, 0x14, 0x8a, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0xb8,
+     0x00, 0x08, 0x00, 0x40, 0x00, 0x00, 0x01, 0x00, 0x00, 0x0f, 0xff, 0xf8, 0x00,
+     0x00, 0x01, 0xb5, 0x8f, 0xff, 0xf3, 0x41, 0x80, 0x00, 0x00, 0x01, 0x01, 0x13,
+     0xf8, 0x7d, 0x29, 0x48, 0x88},
+    {
+     0x00, 0x00, 0x01, 0x00, 0x00, 0x57, 0xff, 0xfb, 0x80, 0x00, 0x00, 0x01, 0xb5,
+     0x81, 0x1f, 0xf3, 0x41, 0x80, 0x00, 0x00, 0x01, 0x01, 0x12, 0x70}};
 
 // Writes TS packets with continuity counters that continue across segments
 class TSWriter
 {
 public:
+  explicit TSWriter(const VideoCodec& codec = H264) : m_codec(codec) {}
+
   // The PAT and PMT at the start of each HLS segment
   void WriteTables(bool video)
   {
@@ -124,7 +168,7 @@ public:
                              0xF0,
                              0x00};
     if (video)
-      pmt.insert(pmt.end(), {0x1B, static_cast<uint8_t>(0xE0 | (VIDEO_PID >> 8)),
+      pmt.insert(pmt.end(), {m_codec.streamType, static_cast<uint8_t>(0xE0 | (VIDEO_PID >> 8)),
                              static_cast<uint8_t>(VIDEO_PID), 0xF0, 0x00});
     pmt.insert(pmt.end(), {0x0F, static_cast<uint8_t>(0xE0 | (AUDIO_PID >> 8)),
                            static_cast<uint8_t>(AUDIO_PID), 0xF0, 0x00});
@@ -153,8 +197,20 @@ public:
   void WriteVideo(int firstFrame, int count, int keyInterval = 1)
   {
     for (int frame = firstFrame; frame < firstFrame + count; ++frame)
-      WritePes(VIDEO_PID, 0xE0, VideoPts(frame),
-               frame % keyInterval ? H264_P_FRAME : H264_IDR_FRAME, false);
+      WriteVideoFrame(frame, frame % keyInterval ? m_codec.frame : m_codec.keyFrame);
+  }
+
+  void WriteVideoFrame(int frame, const std::vector<uint8_t>& accessUnit)
+  {
+    WritePes(VIDEO_PID, 0xE0, VideoPts(frame), accessUnit, false);
+  }
+
+  // A frame can span two PES packets, the second without a PTS
+  void WriteVideoFrameInTwoPes(int frame, const std::vector<uint8_t>& accessUnit)
+  {
+    const auto half{accessUnit.begin() + accessUnit.size() / 2};
+    WritePes(VIDEO_PID, 0xE0, VideoPts(frame), {accessUnit.begin(), half}, false);
+    WritePes(VIDEO_PID, 0xE0, std::nullopt, {half, accessUnit.end()}, false);
   }
 
   std::vector<uint8_t> Take() { return std::move(m_data); }
@@ -196,11 +252,11 @@ private:
 
   void WritePes(uint16_t pid,
                 uint8_t streamId,
-                uint64_t pts,
+                std::optional<uint64_t> pts,
                 const std::vector<uint8_t>& payload,
                 bool pesLength)
   {
-    const size_t length{pesLength ? 8 + payload.size() : 0};
+    const size_t length{pesLength ? (pts ? 8 : 3) + payload.size() : 0};
     std::vector<uint8_t> pes{0x00,
                              0x00,
                              0x01,
@@ -208,18 +264,20 @@ private:
                              static_cast<uint8_t>(length >> 8),
                              static_cast<uint8_t>(length),
                              0x80,
-                             0x80,
-                             0x05,
-                             static_cast<uint8_t>(0x21 | ((pts >> 29) & 0x0E)),
-                             static_cast<uint8_t>(pts >> 22),
-                             static_cast<uint8_t>(((pts >> 14) & 0xFE) | 1),
-                             static_cast<uint8_t>(pts >> 7),
-                             static_cast<uint8_t>(((pts << 1) & 0xFE) | 1)};
+                             static_cast<uint8_t>(pts ? 0x80 : 0x00),
+                             static_cast<uint8_t>(pts ? 0x05 : 0x00)};
+    if (pts)
+      pes.insert(pes.end(), {static_cast<uint8_t>(0x21 | ((*pts >> 29) & 0x0E)),
+                             static_cast<uint8_t>(*pts >> 22),
+                             static_cast<uint8_t>(((*pts >> 14) & 0xFE) | 1),
+                             static_cast<uint8_t>(*pts >> 7),
+                             static_cast<uint8_t>(((*pts << 1) & 0xFE) | 1)});
     pes.insert(pes.end(), payload.begin(), payload.end());
     for (size_t pos = 0; pos < pes.size(); pos += 184)
       WritePacket(pid, pos == 0, pes.data() + pos, std::min<size_t>(184, pes.size() - pos));
   }
 
+  const VideoCodec& m_codec;
   std::vector<uint8_t> m_data;
   std::map<uint16_t, uint8_t> m_continuity;
 };
@@ -297,8 +355,7 @@ TEST_F(TSSampleReaderTest, PtsDiffChangesWithTheFirstFrameOfASegment)
 
     bool started{false};
     ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
-    // The last PES of the stream has no next PES
-    for (int i = 0; i < SEGMENTS * SEGMENT_FRAMES - framesPerPes; ++i)
+    for (int i = 0; i < SEGMENTS * SEGMENT_FRAMES; ++i)
     {
       SCOPED_TRACE(i);
       if (i > 0)
@@ -318,6 +375,8 @@ TEST_F(TSSampleReaderTest, PtsDiffChangesWithTheFirstFrameOfASegment)
       EXPECT_EQ(m_reader->PTS(), Time(AudioPts(i)));
       EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(i / SEGMENT_FRAMES));
     }
+    EXPECT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
+    EXPECT_TRUE(m_reader->EOS());
   }
 }
 
@@ -392,10 +451,9 @@ TEST_F(TSSampleReaderTest, PtsDiffChangesWithTheVideoOfASegment)
       EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(segment));
     } while (AP4_SUCCEEDED(m_reader->ReadSample()));
 
-    // The last PES of each stream has no next PES. The video parser also waits
-    // for the start of the next frame.
-    EXPECT_EQ(video, SEGMENTS * SEGMENT_VIDEO_FRAMES - 2);
-    EXPECT_EQ(audio, withAudio ? SEGMENTS * SEGMENT_FRAMES - framesPerPes : 0);
+    EXPECT_EQ(video, SEGMENTS * SEGMENT_VIDEO_FRAMES);
+    EXPECT_EQ(audio, withAudio ? SEGMENTS * SEGMENT_FRAMES : 0);
+    EXPECT_TRUE(m_reader->EOS());
   }
 }
 
@@ -413,6 +471,9 @@ TEST_F(TSSampleReaderTest, SeekPastTheEndFails)
   ASSERT_TRUE(m_reader->TimeSeek(Time(AudioPts(10)), true));
   EXPECT_EQ(FrameIndex(), 10);
   EXPECT_EQ(m_reader->PTS(), Time(AudioPts(10)));
+  ASSERT_TRUE(m_reader->TimeSeek(Time(AudioPts(SEGMENT_FRAMES - 1)), true));
+  EXPECT_EQ(FrameIndex(), SEGMENT_FRAMES - 1);
+  EXPECT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
   EXPECT_FALSE(m_reader->TimeSeek(Time(AudioPts(SEGMENT_FRAMES)), true));
   EXPECT_TRUE(m_reader->EOS());
 }
@@ -436,7 +497,7 @@ TEST_F(TSSampleReaderTest, SeekWaitsForTheNextLiveSegment)
   bool started{false};
   ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
 
-  const uint64_t target{Time(AudioPts(SEGMENT_FRAMES)) - 1};
+  const uint64_t target{Time(AudioPts(SEGMENT_FRAMES))};
   ASSERT_TRUE(m_reader->TimeSeek(target, true));
   EXPECT_FALSE(m_reader->EOS());
   EXPECT_EQ(m_reader->PTS(), target);
@@ -459,41 +520,52 @@ TEST_F(TSSampleReaderTest, SeekWaitsForTheNextLiveSegment)
 // A video seek lands on the key frame before the seek time, or with
 // preceeding false on the key frame after the seek time. The demuxer emits a
 // video frame only after the start of the next frame, and the seek must start
-// to read at the PES of the key frame, not at the PES of a later frame.
+// to read at the PES of the key frame, not at the PES of a later frame. The
+// scan cannot read back into a segment after the next segment starts, so the
+// last frames of a segment, also a key frame there, come before the switch.
+// A seek time in the next segment lands at the earliest on the first key frame
+// of the next segment, as a seek that starts there. A seek time can also be
+// between the start times of two frames.
 TEST_F(TSSampleReaderTest, VideoSeekLandsOnTheKeyFrame)
 {
-  constexpr int KEY_INTERVAL{5};
-  TSWriter writer;
-  std::vector<uint8_t> segments[2];
-  for (int s = 0; s < 2; ++s)
+  for (const int keyInterval : {5, 7})
   {
-    writer.WriteTables(true);
-    writer.WriteVideo(s * SEGMENT_VIDEO_FRAMES, SEGMENT_VIDEO_FRAMES, KEY_INTERVAL);
-    segments[s] = writer.Take();
-  }
-  for (const bool preceeding : {true, false})
-  // The scan for a target in the last two frames reads into the next segment
-  for (int target = 0; target < SEGMENT_VIDEO_FRAMES - 2; ++target)
-  {
-    SCOPED_TRACE(testing::Message() << "target frame " << target
-                                    << (preceeding ? "" : ", not preceeding"));
-    Open(segments[0], Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
-    AppendSegment(segments[1], Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - DIFF);
-    bool started{false};
-    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
-    for (int i = 0; i < 3; ++i)
+    TSWriter writer;
+    std::vector<uint8_t> segments[2];
+    for (int s = 0; s < 2; ++s)
+    {
+      writer.WriteTables(true);
+      writer.WriteVideo(s * SEGMENT_VIDEO_FRAMES, SEGMENT_VIDEO_FRAMES, keyInterval);
+      segments[s] = writer.Take();
+    }
+    for (const bool preceeding : {true, false})
+    for (const uint64_t offset : {uint64_t{0}, VIDEO_TICKS / 2})
+    for (int target = 0; target < (preceeding ? 2 : 1) * SEGMENT_VIDEO_FRAMES; ++target)
+    {
+      SCOPED_TRACE(testing::Message() << "key interval " << keyInterval << ", target frame "
+                                      << target << " + " << offset << " ticks"
+                                      << (preceeding ? "" : ", not preceeding"));
+      Open(segments[0], Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+      AppendSegment(segments[1], Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+      bool started{false};
+      ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+      for (int i = 0; i < 3; ++i)
+        ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+      // AdaptiveStream::seek_time() restarts the segment of the seek time, and
+      // the session resets the reader
+      m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+      m_segments->m_segmentReadPos = 0;
+      m_reader->Reset(false);
+      const int after{offset ? target + 1 : target};
+      int key{preceeding ? target - target % keyInterval
+                         : (after + keyInterval - 1) / keyInterval * keyInterval};
+      if (target >= SEGMENT_VIDEO_FRAMES)
+        key = std::max(key, (SEGMENT_VIDEO_FRAMES + keyInterval - 1) / keyInterval * keyInterval);
+      ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(target) + offset), preceeding));
+      EXPECT_EQ(m_reader->PTS(), Time(VideoPts(key)));
       ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
-    // AdaptiveStream::seek_time() restarts the segment of the seek time, and
-    // the session resets the reader
-    m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
-    m_segments->m_segmentReadPos = 0;
-    m_reader->Reset(false);
-    const int key{preceeding ? target - target % KEY_INTERVAL
-                             : (target + KEY_INTERVAL - 1) / KEY_INTERVAL * KEY_INTERVAL};
-    ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(target)), preceeding));
-    EXPECT_EQ(m_reader->PTS(), Time(VideoPts(key)));
-    ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
-    EXPECT_EQ(m_reader->PTS(), Time(VideoPts(key + 1)));
+      EXPECT_EQ(m_reader->PTS(), Time(VideoPts(key + 1)));
+    }
   }
 }
 
@@ -526,4 +598,136 @@ TEST_F(TSSampleReaderTest, VideoSeekWaitsForTheNextLiveSegment)
   ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
   EXPECT_EQ(m_reader->PTS(), Time(VideoPts(SEGMENT_VIDEO_FRAMES + 5)));
   EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(1));
+}
+
+// The demuxer emits a PES only when the next PES starts, and the video parser
+// emits a frame only when the next frame starts. At the end of the stream,
+// the reader reads the last frames of the last PES.
+TEST_F(TSSampleReaderTest, TheLastFramesAreReadAtTheEndOfTheStream)
+{
+  for (const VideoCodec* codec : {&H264, &HEVC, &MPEG2})
+  {
+    SCOPED_TRACE(codec->name);
+    TSWriter writer{*codec};
+    writer.WriteTables(true);
+    writer.WriteVideo(0, SEGMENT_VIDEO_FRAMES, 5);
+    Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+    std::vector<uint64_t> expected;
+    for (int i = 0; i < SEGMENT_VIDEO_FRAMES; ++i)
+      expected.push_back(Time(VideoPts(i)));
+    std::vector<uint64_t> read;
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample())
+      read.push_back(m_reader->PTS());
+    EXPECT_EQ(read, expected);
+    EXPECT_TRUE(m_reader->EOS());
+  }
+}
+
+// The H.264 parser waits for 32 bytes after a slice start and for 64 bytes
+// after an SPS or PPS start. At the end of the stream, no more data follows,
+// and a short last frame, as a frame of a fade to black, is read too.
+TEST_F(TSSampleReaderTest, AShortLastH264FrameIsReadAtTheEndOfTheStream)
+{
+  for (const std::vector<uint8_t>* lastFrame : {&H264.keyFrame, &H264.frame})
+  {
+    SCOPED_TRACE(lastFrame == &H264.keyFrame ? "key frame" : "P-frame");
+    TSWriter writer;
+    writer.WriteTables(true);
+    writer.WriteVideo(0, SEGMENT_VIDEO_FRAMES - 1, 5);
+    writer.WriteVideoFrame(SEGMENT_VIDEO_FRAMES - 1,
+                           std::vector<uint8_t>(lastFrame->begin(), lastFrame->end() - 64));
+    Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+    std::vector<uint64_t> read;
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample())
+      read.push_back(m_reader->PTS());
+    ASSERT_EQ(read.size(), SEGMENT_VIDEO_FRAMES);
+    EXPECT_EQ(read.back(), Time(VideoPts(SEGMENT_VIDEO_FRAMES - 1)));
+    EXPECT_TRUE(m_reader->EOS());
+  }
+}
+
+// A live segmenter can end a segment inside a PES. While the reader waits for
+// the next segment, the frame of that PES is not complete.
+TEST_F(TSSampleReaderTest, AFrameAcrossTwoLiveSegmentsIsReadWhole)
+{
+  std::vector<uint8_t> bigFrame{H264.frame};
+  bigFrame.resize(500, 0);
+  constexpr int SPLIT_FRAME{SEGMENT_VIDEO_FRAMES - 1};
+  TSWriter writer;
+  writer.WriteTables(true);
+  writer.WriteVideo(0, SPLIT_FRAME, 5);
+  std::vector<uint8_t> first{writer.Take()};
+  writer.WriteVideoFrame(SPLIT_FRAME, bigFrame);
+  const std::vector<uint8_t> split{writer.Take()};
+  first.insert(first.end(), split.begin(), split.begin() + 188);
+  writer.WriteTables(true);
+  std::vector<uint8_t> second{writer.Take()};
+  second.insert(second.end(), split.begin() + 188, split.end());
+  writer.WriteVideo(SEGMENT_VIDEO_FRAMES, SEGMENT_VIDEO_FRAMES, 5);
+  const std::vector<uint8_t> rest{writer.Take()};
+  second.insert(second.end(), rest.begin(), rest.end());
+
+  Open(first, Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+  m_segments->m_waitingForSegment = true;
+  std::vector<uint64_t> read;
+  AP4_Size splitFrameSize{0};
+  bool started{false};
+  AP4_Result result{m_reader->Start(started)};
+  for (int segment = 0; segment < 2; ++segment)
+  {
+    for (; AP4_SUCCEEDED(result); result = m_reader->ReadSample())
+    {
+      read.push_back(m_reader->PTS());
+      if (m_reader->PTS() == Time(VideoPts(SPLIT_FRAME)))
+        splitFrameSize = m_reader->GetSampleDataSize();
+    }
+    if (segment == 0)
+    {
+      EXPECT_FALSE(m_reader->EOS());
+      AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+      m_segments->m_waitingForSegment = false;
+      result = m_reader->ReadSample();
+    }
+  }
+  std::vector<uint64_t> expected;
+  for (int i = 0; i < 2 * SEGMENT_VIDEO_FRAMES; ++i)
+    expected.push_back(Time(VideoPts(i)));
+  EXPECT_EQ(read, expected);
+  EXPECT_GE(splitFrameSize, bigFrame.size() - 1);
+  EXPECT_TRUE(m_reader->EOS());
+}
+
+// After the seek scan reads the last frames of a segment, the parser again
+// waits for the start of the next frame, as a frame can span two PES packets.
+TEST_F(TSSampleReaderTest, AFrameInTwoPesPacketsIsReadWholeAfterASeek)
+{
+  TSWriter writer;
+  writer.WriteTables(true);
+  writer.WriteVideo(0, SEGMENT_VIDEO_FRAMES, 5);
+  const std::vector<uint8_t> first{writer.Take()};
+  writer.WriteTables(true);
+  for (int frame = SEGMENT_VIDEO_FRAMES; frame < 2 * SEGMENT_VIDEO_FRAMES; ++frame)
+    writer.WriteVideoFrameInTwoPes(frame, frame % 5 ? H264.frame : H264.keyFrame);
+  Open(first, Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+  AppendSegment(writer.Take(), Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+  bool started{false};
+  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+  m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+  m_segments->m_segmentReadPos = 0;
+  m_reader->Reset(false);
+
+  ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(SEGMENT_VIDEO_FRAMES - 1)), true));
+  for (int i = 10; i < 2 * SEGMENT_VIDEO_FRAMES; ++i)
+  {
+    SCOPED_TRACE(i);
+    if (i > 10)
+      ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+    EXPECT_EQ(m_reader->PTS(), Time(VideoPts(i)));
+    EXPECT_GE(m_reader->GetSampleDataSize(), (i % 5 ? H264.frame : H264.keyFrame).size() - 1);
+  }
+  EXPECT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
 }

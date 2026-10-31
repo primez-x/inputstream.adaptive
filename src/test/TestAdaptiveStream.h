@@ -56,6 +56,13 @@ public:
     return 0;
   }
 
+  // The downloaded segments are complete
+  bool IsSegmentEnd(uint64_t position) const
+  {
+    return !m_segments.empty() &&
+           position >= m_absolutePosition - m_segmentReadPos + m_segments.front().size();
+  }
+
   bool seek(uint64_t pos)
   {
     if (m_segments.empty() || pos < m_absolutePosition - m_segmentReadPos)

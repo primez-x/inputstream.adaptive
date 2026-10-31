@@ -47,6 +47,9 @@ public:
   uint64_t GetDuration() const override { return (TSReader::GetDuration() * 100) / 9; }
   bool IsEncrypted() const override { return false; }
 
+protected:
+  bool IsSegmentEnd(uint64_t position) override;
+
 private:
   bool Seek(uint64_t pts);
   AP4_Result EndOfData();
