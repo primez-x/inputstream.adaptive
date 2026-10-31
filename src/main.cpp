@@ -528,7 +528,11 @@ int64_t CInputStreamAdaptive::GetChapterPos(int ch)
 
 bool CInputStreamAdaptive::SeekChapter(int ch)
 {
-  return m_session ? m_session->SeekChapter(ch) : false;
+  if (!m_session || !m_session->SeekChapter(ch))
+    return false;
+  // The chapter replaces the retry of a failed seek
+  m_failedSeekTime = ~0;
+  return true;
 }
 #endif
 /*****************************************************************************************************/

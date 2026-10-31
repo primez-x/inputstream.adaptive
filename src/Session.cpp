@@ -85,6 +85,9 @@ CSession::~CSession()
 void SESSION::CSession::DeleteStreams()
 {
   LOG::Log(LOGDEBUG, "CSession::DeleteStreams()");
+  // The timing stream and a kept seek refer to the streams
+  m_timingStream = nullptr;
+  m_changeSeek.reset();
   m_streams.clear();
 }
 
@@ -620,7 +623,7 @@ bool CSession::InitializePeriod(bool isSessionOpened /* = false */)
   }
 
   // create SESSION::STREAM objects. One for each AdaptationSet
-  m_streams.clear();
+  DeleteStreams();
 
   if (!isPsshChanged)
   {
@@ -1346,7 +1349,7 @@ void CSession::OnDemuxRead()
 
   // A seek at a pending change of the representation continues after the reopen
   // of the changed streams: the new reader starts at the start of the segment
-  if (m_changeSeek &&
+  if (m_changeSeek && !m_adaptiveTree->IsChangingPeriod() &&
       std::none_of(m_streams.cbegin(), m_streams.cend(), [](const auto& stream)
                    { return stream->m_isEnabled && stream->m_adStream.StreamChanged(); }))
   {
@@ -1574,6 +1577,8 @@ bool CSession::SeekChapter(int ch)
   {
     CPeriod* nextPeriod = m_adaptiveTree->m_periods[ch].get();
     m_adaptiveTree->m_nextPeriod = nextPeriod;
+    // The new period replaces a seek that waits for the reopen of a stream
+    m_changeSeek.reset();
     LOG::LogF(LOGDEBUG, "Switching to new Period (id=%s, start=%llu, seq=%u)",
               nextPeriod->GetId().data(), nextPeriod->GetStart(), nextPeriod->GetSequence());
 

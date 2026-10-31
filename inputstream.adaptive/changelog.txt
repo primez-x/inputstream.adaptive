@@ -17,6 +17,8 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix a seek during a change of the stream quality, which continued at the start of the segment instead of at the seek time
 - Fix wrong stream times, a wrong seek limit of a live stream and seeks to the wrong segment with a high timescale or large times (for example times from 1970 at 90 kHz), where a time conversion overflowed
 - Fix a DASH SegmentList without a timescale, whose segment times counted in microseconds instead of seconds
+- Fix a possible crash at a seek after the playback stopped for a missing decrypter
+- Fix a chapter selection after a failed seek, which returned to the time of the failed seek
 - Fix a seek to an earlier time inside the current segment, which continued at the start of the segment instead of at the frame of the seek time
 - Fix a seek in a TS stream with video and audio that returned an audio frame first, so the other streams aligned to the audio time instead of the video frame of the seek
 - Fix a seek in an HEVC or MPEG-2 TS stream, which continued at the segment start instead of at the key frame of the seek time
