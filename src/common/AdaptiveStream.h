@@ -154,7 +154,8 @@ enum class EVENT_TYPE
       RUNNING,
       STOPPED,
       PAUSED
-    } state_;
+    };
+    std::atomic<STATE> state_;
 
     // Segment download section
 

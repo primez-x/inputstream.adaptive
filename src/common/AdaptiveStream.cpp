@@ -317,7 +317,12 @@ void AdaptiveStream::ResetActiveBuffer(bool oneValid)
 bool AdaptiveStream::StopWorker(STATE state)
 {
   // stop downloading chunks
-  state_ = state;
+  // The worker checks the state under mutex_dl_ before a download starts, so a download
+  // that starts after this change sees the new state and this wait sees the download
+  {
+    std::lock_guard<std::mutex> lckdl(thread_data_->mutex_dl_);
+    state_ = state;
+  }
   // wait until last reading operation stopped
   // make sure download section in worker thread is done.
   std::unique_lock<std::mutex> lckrw(thread_data_->mutex_rw_);
@@ -351,6 +356,23 @@ void adaptive::AdaptiveStream::WaitWorker()
 void AdaptiveStream::worker()
 {
   std::unique_lock<std::mutex> lckdl(thread_data_->mutex_dl_);
+
+  // The readers check worker_processing_ under mutex_rw_ before they wait on signal_rw_,
+  // so the flag changes under mutex_rw_, else a reader can miss the signal and wait forever.
+  // The worker also holds mutex_dl_ again before the flag changes, so WaitWorker returns
+  // only after the worker waits for the next download. mutex_rw_ comes first, as in read().
+  const auto endProcessing = [this, &lckdl](bool isFailed)
+  {
+    std::unique_lock<std::mutex> lckrw(thread_data_->mutex_rw_);
+    lckdl.lock();
+    // Download cancelled or cannot download the file
+    if (isFailed)
+      state_ = STOPPED;
+    worker_processing_ = false;
+    lckrw.unlock();
+    thread_data_->signal_rw_.notify_all();
+  };
+
   worker_processing_ = false;
   thread_data_->signal_dl_.notify_one();
   do
@@ -368,7 +390,10 @@ void AdaptiveStream::worker()
       DownloadInfo downloadInfo;
       if (!PrepareNextDownload(downloadInfo))
       {
-        worker_processing_ = false;
+        // ensureSegment can wait for the download start while the reader holds mutex_rw_
+        thread_data_->signal_dl_.notify_one();
+        lckdl.unlock();
+        endProcessing(false);
         continue;
       }
 
@@ -405,18 +430,8 @@ void AdaptiveStream::worker()
         LOG::Log(LOGWARNING, "[AS-%u] Segment download failed, attempt %zu...", clsId, downloadAttempts);
       }
 
-      lckdl.lock();
-
-      if (!isSegmentDownloaded)
-      {
-        std::lock_guard<std::mutex> lckrw(thread_data_->mutex_rw_);
-        // Download cancelled or cannot download the file
-        state_ = STOPPED;
-      }
-
       // Signal finished download
-      worker_processing_ = false;
-      thread_data_->signal_rw_.notify_all();
+      endProcessing(!isSegmentDownloaded);
     }
   } while (!thread_data_->thread_stop_);
 
