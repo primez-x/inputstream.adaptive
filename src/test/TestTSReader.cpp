@@ -1054,10 +1054,12 @@ std::vector<AudioFrame> ReadAudioFrames(TSDemux::ElementaryStream& stream,
   {
     stream.Append(data.data() + pos, std::min(chunk, data.size() - pos), pos == 0);
     while (read.size() < 10 && stream.GetStreamPacket(&pkt))
-      read.push_back({static_cast<unsigned int>(pkt.size), pkt.pts, pkt.duration});
+      read.push_back(
+          {static_cast<unsigned int>(pkt.size), pkt.pts, static_cast<int64_t>(pkt.duration)});
   }
   while (read.size() < 10 && stream.GetEndPacket(&pkt, true))
-    read.push_back({static_cast<unsigned int>(pkt.size), pkt.pts, pkt.duration});
+    read.push_back(
+        {static_cast<unsigned int>(pkt.size), pkt.pts, static_cast<int64_t>(pkt.duration)});
   return read;
 }
 
@@ -1255,7 +1257,8 @@ TEST(TSParserTest, AnEAc3AccessUnitWaitsForTheRestAtTheEndOfASegment)
       while (read.size() < 10 &&
              (stream.GetStreamPacket(&pkt) ||
               (endOfStream && stream.GetEndPacket(&pkt, *endOfStream))))
-        read.push_back({static_cast<unsigned int>(pkt.size), pkt.pts, pkt.duration});
+        read.push_back(
+            {static_cast<unsigned int>(pkt.size), pkt.pts, static_cast<int64_t>(pkt.duration)});
     };
     {
       SCOPED_TRACE(testing::Message() << "segment end after " << split << " bytes");

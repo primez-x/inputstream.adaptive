@@ -902,8 +902,7 @@ bool AdaptiveStream::ensureSegment()
     else
       nextSegment = current_rep_->GetNextSegment();
 
-    if (!nextSegment && (m_tree->HasManifestUpdates() || m_tree->HasManifestUpdatesSegs()) &&
-        !m_tree->IsLastSegment(current_period_, current_rep_, current_rep_->current_segment_))
+    if (!nextSegment && CanAddLiveSegment())
     {
       // Ensure to add a new segment only when the last one in the buffer has been consumed
       if (available_segment_buffers_ == 0)
@@ -1334,7 +1333,14 @@ bool AdaptiveStream::IsLastSegment() const
   if (!current_rep_)
     return true;
   std::lock_guard<adaptive::AdaptiveTree::TreeUpdateThread> lckUpdTree(m_tree->GetTreeUpdMutex());
-  return m_tree->IsLastSegment(current_period_, current_rep_, current_rep_->current_segment_);
+  // The same rule as ensureSegment, which loads the next segment
+  return !current_rep_->GetNextSegment() && !CanAddLiveSegment();
+}
+
+bool AdaptiveStream::CanAddLiveSegment() const
+{
+  return (m_tree->HasManifestUpdates() || m_tree->HasManifestUpdatesSegs()) &&
+         !m_tree->IsLastSegment(current_period_, current_rep_, current_rep_->current_segment_);
 }
 
 bool AdaptiveStream::waitingForSegment() const

@@ -782,3 +782,57 @@ TEST_F(DASHTreeTest, TSBAvailabilityStartTime)
   EXPECT_EQ(tl.GetFront()->m_number, 129069);
   EXPECT_EQ(tl.GetBack()->m_number, 130268);
 }
+
+TEST_F(DASHTreeTest, LastSegmentOfEachPeriod)
+{
+  // Two periods of three segments. In a live stream, the last period continues.
+  // An update period of 0 updates the manifest at each segment.
+  for (const bool live : {false, true})
+  {
+    for (const auto [offset, update] : {std::pair{false, "PT2S"}, std::pair{true, "PT2S"},
+                                        std::pair{false, "PT0S"}, std::pair{true, "PT0S"}})
+    {
+      SCOPED_TRACE(testing::Message() << "live=" << live << " presentationTimeOffset=" << offset
+                                      << " minimumUpdatePeriod=" << update);
+      tree->Uninitialize();
+      delete tree;
+      tree = new DASHTestTree();
+      CSrvBroker::GetInstance()->Init(m_kodiProps);
+      tree->Configure(m_reprChooser, {}, "");
+      const std::string start{offset ? "100" : "0"};
+      std::string manifest{"<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"" +
+                           std::string{live ? "dynamic" : "static"} +
+                           "\" minimumUpdatePeriod=\"" + update + "\">"};
+      for (int period = 0; period < 2; ++period)
+      {
+        manifest += "<Period id=\"" + std::to_string(period) + "\" start=\"PT" +
+                    std::to_string(period * 6) +
+                    "S\" duration=\"PT6S\"><AdaptationSet mimeType=\"video/mp2t\" "
+                    "contentType=\"video\"><SegmentTemplate timescale=\"1\" "
+                    "media=\"seg-$Number$.ts\"" +
+                    (offset ? " presentationTimeOffset=\"100\"" : "") +
+                    "><SegmentTimeline><S t=\"" + start +
+                    "\" d=\"2\" r=\"2\"/></SegmentTimeline></SegmentTemplate>"
+                    "<Representation id=\"1\" codecs=\"avc1.4d401f\" bandwidth=\"1000000\"/>"
+                    "</AdaptationSet></Period>";
+      }
+      manifest += "</MPD>";
+      ASSERT_TRUE(tree->Open("http://foo.bar/periods.mpd", {}, manifest));
+      ASSERT_EQ(tree->m_periods.size(), 2);
+      for (int period = 0; period < 2; ++period)
+      {
+        tree->m_currentPeriod = tree->m_periods[period].get();
+        auto adp = tree->m_currentPeriod->GetAdaptationSets()[0].get();
+        auto rep = adp->GetRepresentations()[0].get();
+        adaptive::AdaptiveStream stream{tree, adp, rep};
+        ASSERT_EQ(rep->Timeline().GetSize(), 3);
+        for (int segment = 0; segment < 3; ++segment)
+        {
+          rep->current_segment_ = rep->Timeline().Get(segment);
+          EXPECT_EQ(stream.IsLastSegment(), segment == 2 && (!live || period == 0))
+              << "period=" << period << " segment=" << segment;
+        }
+      }
+    }
+  }
+}

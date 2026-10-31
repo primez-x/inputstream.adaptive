@@ -147,6 +147,10 @@ enum class EVENT_TYPE
     bool IsRequiredCreateMovieAtom();
 
   protected:
+    /*!
+     * \brief True if a manifest update can add a segment after the current segment
+     */
+    bool CanAddLiveSegment() const;
     virtual bool parseIndexRange(PLAYLIST::CRepresentation* rep,
                                  const std::vector<uint8_t>& buffer);
 

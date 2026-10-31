@@ -439,3 +439,65 @@ TEST_F(HLSTreeTest, MultipleEncryptionSequenceDrm)
   EXPECT_EQ(periods[0]->GetEncryptionState(), PLAYLIST::EncryptionState::ENCRYPTED_DRM);
   EXPECT_EQ(periods[1]->GetEncryptionState(), PLAYLIST::EncryptionState::ENCRYPTED_DRM);
 }
+
+namespace
+{
+class ChildManifestTree : public HLSTestTree
+{
+public:
+  using HLSTestTree::ParseChildManifest;
+};
+} // namespace
+
+TEST_F(HLSTreeTest, LastSegmentOfEachPeriod)
+{
+  // Two periods of three segments. In a live stream, the last period continues.
+  for (const bool live : {false, true})
+  {
+    for (const bool dateTime : {false, true})
+    {
+      SCOPED_TRACE(testing::Message() << "live=" << live << " program date time=" << dateTime);
+      CSrvBroker::GetInstance()->Init(m_kodiProps);
+      ChildManifestTree hls;
+      hls.Configure(m_reprChooser, {}, "");
+      ASSERT_TRUE(hls.Open("http://foo.bar/master.m3u8", {},
+                           "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,CODECS=\"avc1.4d401f\"\n"
+                           "video.m3u8\n"));
+      auto period = hls.m_periods[0].get();
+      auto adp = period->GetAdaptationSets()[0].get();
+      auto rep = adp->GetRepresentations()[0].get();
+      std::string media{"#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:1\n"};
+      if (!live)
+        media += "#EXT-X-PLAYLIST-TYPE:VOD\n";
+      for (int p = 0; p < 2; ++p)
+      {
+        if (p)
+          media += "#EXT-X-DISCONTINUITY\n";
+        if (dateTime)
+          media += "#EXT-X-PROGRAM-DATE-TIME:2026-10-30T00:00:0" + std::to_string(p * 6) + "Z\n";
+        for (int segment = 0; segment < 3; ++segment)
+          media += "#EXTINF:2,\nseg" + std::to_string(p * 3 + segment) + ".ts\n";
+      }
+      if (!live)
+        media += "#EXT-X-ENDLIST\n";
+      ASSERT_EQ(hls.ParseChildManifest(media, "http://foo.bar/video.m3u8", period, adp, rep),
+                adaptive::CHLSTree::ParseStatus::SUCCESS);
+      ASSERT_EQ(hls.m_periods.size(), 2);
+      for (int p = 0; p < 2; ++p)
+      {
+        hls.m_currentPeriod = hls.m_periods[p].get();
+        adp = hls.m_currentPeriod->GetAdaptationSets()[0].get();
+        rep = adp->GetRepresentations()[0].get();
+        adaptive::AdaptiveStream stream{&hls, adp, rep};
+        ASSERT_EQ(rep->Timeline().GetSize(), 3);
+        for (int segment = 0; segment < 3; ++segment)
+        {
+          rep->current_segment_ = rep->Timeline().Get(segment);
+          EXPECT_EQ(stream.IsLastSegment(), segment == 2 && (!live || p == 0))
+              << "period=" << p << " segment=" << segment;
+        }
+      }
+      hls.Uninitialize();
+    }
+  }
+}
