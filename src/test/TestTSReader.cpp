@@ -129,6 +129,7 @@ struct AudioCodec
 };
 
 const AudioCodec AAC{0x0F, [](int index) { return AacFrame(index); }, AUDIO_TICKS};
+const AudioCodec EAC3{0x87, [](int index) { return Eac3Frame(0, 3, index); }, EAC3_TICKS};
 const AudioCodec EAC3_71{0x87, Eac3AccessUnit, EAC3_TICKS};
 
 // The parser reads an H.264 SPS or PPS only with 64 bytes after the start
@@ -2571,6 +2572,61 @@ TEST_F(TSSampleReaderTest, HeldAudioOfShortSegmentsHasTheDiffOfItsSegment)
   for (int a = 0; a < 24; ++a)
     expected.emplace_back(a, Time(AudioPts(a)), SegmentDiff(a / 2));
   EXPECT_EQ(read, expected);
+}
+
+// In the last segment of the stream, the E-AC-3 parser does not wait for
+// the next segment: a seek finds the last audio frame of the stream
+TEST_F(TSSampleReaderTest, ASeekFindsTheLastAudioFrameOfTheStream)
+{
+  for (const AudioCodec* codec : {&AAC, &EAC3, &EAC3_71})
+  for (const bool preceeding : {true, false})
+  for (const int target : {8, 9})
+  {
+    SCOPED_TRACE(testing::Message() << (codec == &AAC ? "AAC" : codec == &EAC3 ? "E-AC-3" : "7.1 E-AC-3")
+                                    << (preceeding ? "" : ", not preceeding") << ", seek to " << target);
+    TSWriter writer{H264, *codec};
+    writer.WriteTables(false);
+    writer.WriteAudio(BASE_PTS, 0, 10, 1, false);
+    Open(writer.Take(), Time(BASE_PTS) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+    bool started{false};
+    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+    m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+    m_segments->m_segmentReadPos = 0;
+    m_reader->Reset(false);
+    ASSERT_TRUE(m_reader->TimeSeek(Time(BASE_PTS + target * codec->ticks), preceeding));
+    EXPECT_FALSE(m_reader->EOS());
+    EXPECT_EQ(FrameIndex(), target);
+    EXPECT_EQ(m_reader->GetSampleDataSize(), codec->frame(target).size());
+  }
+}
+
+// The only PTS of the last segment of the stream comes with the last access
+// unit. The clock scan of a seek takes the clock from that PTS.
+TEST_F(TSSampleReaderTest, ASeekTakesTheClockFromTheLastAudioFrameOfTheStream)
+{
+  for (const AudioCodec* codec : {&EAC3, &EAC3_71})
+  for (const int target : {0, 5, 9})
+  {
+    SCOPED_TRACE(testing::Message() << (codec == &EAC3 ? "E-AC-3" : "7.1 E-AC-3") << ", seek to "
+                                    << target);
+    TSWriter writer{H264, *codec};
+    writer.WriteTables(false);
+    for (int a = 0; a < 10; ++a)
+      writer.WriteAudioPes(a == 9 ? std::optional<uint64_t>{BASE_PTS + 9 * EAC3_TICKS}
+                                  : std::nullopt,
+                           codec->frame(a));
+    Open(writer.Take(), Time(BASE_PTS) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+    bool started{false};
+    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+    ASSERT_EQ(FrameIndex(), 0);
+    ASSERT_EQ(m_reader->PTS(), Time(BASE_PTS));
+    m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+    m_segments->m_segmentReadPos = 0;
+    m_reader->Reset(false);
+    ASSERT_TRUE(m_reader->TimeSeek(Time(BASE_PTS + target * EAC3_TICKS), true));
+    EXPECT_EQ(FrameIndex(), target);
+    EXPECT_EQ(m_reader->PTS(), Time(BASE_PTS + target * EAC3_TICKS));
+  }
 }
 
 // A seek drops the audio frames that came with the first PTS and still wait

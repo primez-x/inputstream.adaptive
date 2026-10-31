@@ -56,6 +56,11 @@ bool CAdaptiveByteStream::IsSegmentEnd(AP4_Position position)
   return m_adStream->IsSegmentEnd(position);
 }
 
+bool CAdaptiveByteStream::IsLastSegment() const
+{
+  return m_adStream->IsLastSegment();
+}
+
 void CAdaptiveByteStream::FixateInitialization(bool on)
 {
   m_adStream->FixateInitialization(on);

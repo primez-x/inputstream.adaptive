@@ -1329,6 +1329,14 @@ bool AdaptiveStream::IsSegmentEnd(uint64_t position)
   return position >= segmentStart + segment_buffers_[0]->buffer.size();
 }
 
+bool AdaptiveStream::IsLastSegment() const
+{
+  if (!current_rep_)
+    return true;
+  std::lock_guard<adaptive::AdaptiveTree::TreeUpdateThread> lckUpdTree(m_tree->GetTreeUpdMutex());
+  return m_tree->IsLastSegment(current_period_, current_rep_, current_rep_->current_segment_);
+}
+
 bool AdaptiveStream::waitingForSegment() const
 {
   if ((m_tree->HasManifestUpdates() || m_tree->HasManifestUpdatesSegs()) && state_ == RUNNING)

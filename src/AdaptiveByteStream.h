@@ -50,6 +50,7 @@ public:
   void Release() override{};
   bool waitingForSegment() const;
   bool IsSegmentEnd(AP4_Position position);
+  bool IsLastSegment() const;
   void FixateInitialization(bool on);
   void SetSegmentFileOffset(uint64_t offset);
 

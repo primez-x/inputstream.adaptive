@@ -492,7 +492,7 @@ bool TSReader::ReadNextPacket(bool scanStreamInfo)
   while (!ret)
   {
     if (m_stopAtSegmentEnd && IsSegmentEnd(m_AVContext->GetPosition()))
-      return ReadNextEndPacket(false);
+      return ReadNextEndPacket(IsLastSegment());
 
     int errorCode;
     if ((errorCode = m_AVContext->TSResync()) != TSDemux::AVCONTEXT_CONTINUE)

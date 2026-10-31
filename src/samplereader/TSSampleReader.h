@@ -63,6 +63,7 @@ public:
 
 protected:
   bool IsSegmentEnd(uint64_t position) override;
+  bool IsLastSegment() override;
 
 private:
   bool Seek(uint64_t pts);

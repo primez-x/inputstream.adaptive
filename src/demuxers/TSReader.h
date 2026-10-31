@@ -107,6 +107,11 @@ protected:
    * \brief True if the data of the current segment ends at the position
    */
   virtual bool IsSegmentEnd(uint64_t position) { return false; }
+  /*!
+   * \brief True if no segment follows the current segment, so the end of the
+   *        segment is the end of the stream
+   */
+  virtual bool IsLastSegment() { return false; }
 
 private:
   bool GetPacket();

@@ -63,6 +63,9 @@ public:
            position >= m_absolutePosition - m_segmentReadPos + m_segments.front().size();
   }
 
+  // A live stream that waits has a next segment
+  bool IsLastSegment() const { return m_segments.size() <= 1 && !m_waitingForSegment; }
+
   bool seek(uint64_t pos)
   {
     if (m_segments.empty() || pos < m_absolutePosition - m_segmentReadPos)

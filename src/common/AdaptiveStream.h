@@ -129,6 +129,10 @@ enum class EVENT_TYPE
      *        the download of the current segment continues at the position.
      */
     bool IsSegmentEnd(uint64_t position);
+    /*!
+     * \brief True if no segment of the stream follows the current segment
+     */
+    bool IsLastSegment() const;
     void FixateInitialization(bool on);
     void SetSegmentFileOffset(uint64_t offset) { m_segmentFileOffset = offset; };
     bool StreamChanged() { return m_startEvent == EVENT_TYPE::REP_CHANGE; }
