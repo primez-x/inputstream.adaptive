@@ -10,7 +10,9 @@
 #include "bitstream.h"
 #include "debug.h"
 
+#include <algorithm>
 #include <cstring>      // for memset memcpy
+#include <iterator>
 
 using namespace TSDemux;
 
@@ -90,7 +92,7 @@ static unsigned int unescape(const uint8_t * in, uint8_t *out, unsigned int in_s
 void ES_h264::Parse(STREAM_PKT* pkt)
 {
   size_t frame_ptr = es_consumed;
-  size_t pOld = es_parsed, p = es_parsed;
+  size_t p = es_parsed;
   uint32_t startcode = m_StartCode;
   bool frameComplete = false;
 
@@ -98,6 +100,8 @@ void ES_h264::Parse(STREAM_PKT* pkt)
   {
     if ((startcode & 0xffffff00) == 0x00000100)
     {
+      // A parameter set can start in the data of an earlier parse
+      const size_t pOld = frame_ptr + m_LastStartPos;
       if (m_PPSRawId >= 0)
       {
         int codeOffset = p >= 5 && es_buf[p - 5] == 0 ? 5 : 4;
@@ -112,7 +116,8 @@ void ES_h264::Parse(STREAM_PKT* pkt)
       {
         int codeOffset = p >= 5 && es_buf[p - 5] == 0 ? 5 : 4;
         uint8_t unescaped[256];
-        unsigned int usize = unescape(es_buf + pOld + 1, unescaped, p - pOld - codeOffset - 1);
+        unsigned int usize = unescape(es_buf + pOld + 1, unescaped,
+                                      std::min<size_t>(p - pOld - codeOffset - 1, sizeof(unescaped)));
         Parse_SPS(unescaped, usize, false);
 
         m_streamData.sps[m_SPSRawId].raw_data_size = p - pOld - codeOffset;
@@ -122,7 +127,7 @@ void ES_h264::Parse(STREAM_PKT* pkt)
           m_streamData.sps[m_SPSRawId].raw_data_size = 0;
         m_SPSRawId = -1, es_extraDataChanged = true;
       }
-      pOld = p - 1;
+      m_LastStartPos = p - 1 - frame_ptr;
       if (Parse_H264(startcode, p, frameComplete) < 0)
       {
         break;
@@ -166,36 +171,16 @@ void ES_h264::Parse(STREAM_PKT* pkt)
 
       if (es_extraDataChanged)
       {
+        stream_info.extra_data_size = 0;
         if (m_streamData.sps[0].raw_data_size)
         {
-          uint8_t* ed = stream_info.extra_data;
-          const uint8_t* edEnd = stream_info.extra_data + sizeof(stream_info.extra_data);
-          stream_info.extra_data_size = 0;
-
-          // Append a parameter set NAL (SPS/PPS) as Annex B, bounded by the
-          // destination buffer to avoid overflowing stream_info.extra_data
-          auto appendNal = [&](const uint8_t* src, size_t n) -> bool {
-            if (ed + 4 + n > edEnd)
-            {
-              DBG(DEMUX_DBG_INFO, "H.264: stream_info.extra_data too small! %u\n",
-                  static_cast<unsigned int>(stream_info.extra_data_size + 4 + n));
-              return false;
-            }
-            ed[0] = ed[1] = ed[2] = 0, ed[3] = 1, ed += 4;
-            memcpy(ed, src, n), ed += n;
-            stream_info.extra_data_size += 4 + n;
-            return true;
-          };
-
-          appendNal(m_streamData.sps[0].raw_data, m_streamData.sps[0].raw_data_size);
+          AppendExtraData(m_streamData.sps[0].raw_data, m_streamData.sps[0].raw_data_size);
           for (int i = 0; i < 256; ++i)
           {
             if (m_streamData.pps[i].raw_data_size)
-              appendNal(m_streamData.pps[i].raw_data, m_streamData.pps[i].raw_data_size);
+              AppendExtraData(m_streamData.pps[i].raw_data, m_streamData.pps[i].raw_data_size);
           }
         }
-        else
-          stream_info.extra_data_size = 0;
       }
       es_extraDataChanged = false;
     }
@@ -211,6 +196,7 @@ void ES_h264::Reset()
 {
   ElementaryStream::Reset();
   m_StartCode = 0xffffffff;
+  m_LastStartPos = 0;
   // The SPS and PPS stay valid for the next frames of the stream, as for the
   // decoder, which has them in the extra data. So after a seek, an IDR picture
   // can use the parameter sets of an earlier picture.
@@ -364,8 +350,11 @@ bool ES_h264::Parse_PPS(uint8_t *buf, int len)
 {
   CBitstream bs(buf, len*8);
 
-  int pps_id = bs.readGolombUE();
-  int sps_id = bs.readGolombUE();
+  unsigned int pps_id = bs.readGolombUE();
+  unsigned int sps_id = bs.readGolombUE();
+  // A corrupt stream can have an id outside the range of ids
+  if (pps_id >= std::size(m_streamData.pps) || sps_id >= std::size(m_streamData.sps))
+    return false;
   m_streamData.pps[pps_id].sps = sps_id;
   bs.readBits1();
   m_streamData.pps[pps_id].pic_order_present_flag = bs.readBits1();
@@ -397,7 +386,9 @@ bool ES_h264::Parse_SLH(uint8_t *buf, int len, h264_private::VCL_NAL &vcl)
     return false;
   }
 
-  int pps_id = bs.readGolombUE();
+  unsigned int pps_id = bs.readGolombUE();
+  if (pps_id >= std::size(m_streamData.pps))
+    return false;
   int sps_id = m_streamData.pps[pps_id].sps;
   if (m_streamData.sps[sps_id].cbpsize == 0)
     return false;
@@ -453,6 +444,8 @@ bool ES_h264::Parse_SPS(uint8_t *buf, int len, bool idOnly)
   bs.skipBits(8);
   int level_idc = bs.readBits(8);
   unsigned int seq_parameter_set_id = bs.readGolombUE(9);
+  if (seq_parameter_set_id >= std::size(m_streamData.sps))
+    return false;
 
   if (idOnly)
   {
@@ -508,13 +501,18 @@ bool ES_h264::Parse_SPS(uint8_t *buf, int len, bool idOnly)
     }
   }
 
-  int log2_max_frame_num_minus4 = bs.readGolombUE();           /* log2_max_frame_num - 4 */
+  // A corrupt stream can have values outside the ranges of the standard
+  unsigned int log2_max_frame_num_minus4 = bs.readGolombUE();  /* log2_max_frame_num - 4 */
+  if (log2_max_frame_num_minus4 > 12)
+    return false;
   m_streamData.sps[seq_parameter_set_id].log2_max_frame_num = log2_max_frame_num_minus4 + 4;
   int pic_order_cnt_type = bs.readGolombUE(9);
   m_streamData.sps[seq_parameter_set_id].pic_order_cnt_type = pic_order_cnt_type;
   if (pic_order_cnt_type == 0)
   {
-    int log2_max_pic_order_cnt_lsb_minus4 = bs.readGolombUE();         /* log2_max_poc_lsb - 4 */
+    unsigned int log2_max_pic_order_cnt_lsb_minus4 = bs.readGolombUE(); /* log2_max_poc_lsb - 4 */
+    if (log2_max_pic_order_cnt_lsb_minus4 > 12)
+      return false;
     m_streamData.sps[seq_parameter_set_id].log2_max_pic_order_cnt_lsb = log2_max_pic_order_cnt_lsb_minus4 + 4;
   }
   else if (pic_order_cnt_type == 1)
@@ -523,6 +521,8 @@ bool ES_h264::Parse_SPS(uint8_t *buf, int len, bool idOnly)
     bs.readGolombSE();         /* offset_for_non_ref_pic          */
     bs.readGolombSE();         /* offset_for_top_to_bottom_field  */
     tmp = bs.readGolombUE();   /* num_ref_frames_in_pic_order_cnt_cycle */
+    if (tmp > 255)
+      return false;
     for (unsigned int i = 0; i < tmp; i++)
       bs.readGolombSE();       /* offset_for_ref_frame[i]         */
   }

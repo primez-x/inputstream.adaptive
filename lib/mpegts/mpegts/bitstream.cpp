@@ -17,6 +17,12 @@ void CBitstream::skipBits(unsigned int num)
 
     while (num)
     {
+      // The EP3 byte check reads the byte at the offset
+      if (m_offset >= m_len)
+      {
+        m_error = true;
+        break;
+      }
       unsigned int tmp = m_offset >> 3;
       if (!(m_offset & 7) && (m_data[tmp--] == 3) && (m_data[tmp--] == 0) && (m_data[tmp] == 0))
         m_offset += 8;   // skip EP3 byte
@@ -56,7 +62,7 @@ unsigned int CBitstream::readBits(int num)
 
   while(num > 0)
   {
-    if (m_doEP3)
+    if (m_doEP3 && m_offset < m_len)
     {
       size_t tmp = m_offset >> 3;
       if (!(m_offset & 7) && (m_data[tmp--] == 3) && (m_data[tmp--] == 0) && (m_data[tmp] == 0))

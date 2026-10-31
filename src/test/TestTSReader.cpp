@@ -8,6 +8,9 @@
 
 #include "AdaptiveByteStream.h"
 #include "TestAdaptiveStream.h"
+#include "mpegts/ES_MPEGVideo.h"
+#include "mpegts/ES_h264.h"
+#include "mpegts/ES_hevc.h"
 #include "samplereader/TSSampleReader.h"
 
 #include <algorithm>
@@ -143,10 +146,10 @@ const VideoCodec MPEG2{
      0x00, 0x00, 0x01, 0x00, 0x00, 0x57, 0xff, 0xfb, 0x80, 0x00, 0x00, 0x01, 0xb5,
      0x81, 0x1f, 0xf3, 0x41, 0x80, 0x00, 0x00, 0x01, 0x01, 0x12, 0x70}};
 
-// A key frame that uses the parameter sets of an earlier key frame: the access
-// unit without the VPS, SPS and PPS, or without the MPEG-2 sequence header and
-// sequence extension
-std::vector<uint8_t> WithoutParameterSets(const VideoCodec& codec)
+// The parameter sets of the key frame: the VPS, SPS and PPS, or the MPEG-2
+// sequence header and sequence extension. Or a key frame that uses the
+// parameter sets of an earlier key frame: the access unit without them.
+std::vector<uint8_t> KeyFrameUnits(const VideoCodec& codec, bool parameterSets)
 {
   const std::vector<uint8_t>& au{codec.keyFrame};
   std::vector<size_t> starts; // The start code of each unit
@@ -167,10 +170,62 @@ std::vector<uint8_t> WithoutParameterSets(const VideoCodec& codec)
       parameterSet = ((unit[0] >> 1) & 0x3F) >= 32 && ((unit[0] >> 1) & 0x3F) <= 34;
     else
       parameterSet = unit[0] == 0xB3 || (unit[0] == 0xB5 && unit[1] >> 4 == 1);
-    if (!parameterSet)
+    if (parameterSet == parameterSets)
       result.insert(result.end(), au.begin() + starts[n], au.begin() + starts[n + 1]);
   }
   return result;
+}
+
+// The stream information of a parser
+struct ParsedInfo
+{
+  std::vector<uint8_t> extraData;
+  int width;
+  int height;
+  bool operator==(const ParsedInfo& other) const
+  {
+    return extraData == other.extraData && width == other.width && height == other.height;
+  }
+};
+
+// Parses access units, each in its own PES with a PTS. The parser gets the
+// data in chunks, as from TS packets.
+ParsedInfo ParseAccessUnits(const VideoCodec& codec,
+                            const std::vector<std::vector<uint8_t>>& accessUnits,
+                            size_t chunk)
+{
+  std::unique_ptr<TSDemux::ElementaryStream> stream;
+  if (codec.streamType == H264.streamType)
+    stream = std::make_unique<TSDemux::ES_h264>(VIDEO_PID);
+  else if (codec.streamType == HEVC.streamType)
+    stream = std::make_unique<TSDemux::ES_hevc>(VIDEO_PID);
+  else
+    stream = std::make_unique<TSDemux::ES_MPEG2Video>(VIDEO_PID);
+  TSDemux::STREAM_PKT pkt;
+  for (size_t n = 0; n < accessUnits.size(); ++n)
+  {
+    stream->p_pts = stream->c_pts;
+    stream->p_dts = stream->c_dts;
+    stream->c_pts = stream->c_dts = 90000 + 3000 * n;
+    const std::vector<uint8_t>& au{accessUnits[n]};
+    std::vector<size_t> ends;
+    for (size_t end = chunk; end < au.size(); end += chunk)
+      ends.push_back(end);
+    ends.push_back(au.size());
+    std::sort(ends.begin(), ends.end());
+    size_t start{0};
+    for (const size_t end : ends)
+    {
+      stream->Append(au.data() + start, end - start, start == 0);
+      while (stream->GetStreamPacket(&pkt))
+        ;
+      start = end;
+    }
+  }
+  while (stream->GetEndPacket(&pkt))
+    ;
+  const TSDemux::STREAM_INFO& info{stream->stream_info};
+  return {{info.extra_data, info.extra_data + info.extra_data_size}, info.width, info.height};
 }
 
 // Writes TS packets with continuity counters that continue across segments
@@ -620,6 +675,109 @@ TEST_F(TSSampleReaderTest, TheReadAfterAResetStartsAtAKeyFrame)
   }
 }
 
+// A corrupt parameter set can have an id outside the range of ids. The parser
+// ignores such a parameter set, so the frames and the stream information stay
+// the same.
+TEST_F(TSSampleReaderTest, AParameterSetWithAnIdOutOfRangeIsIgnored)
+{
+  // The PPS id 100000 and the H.264 SPS id 1000 as ue(v), and an H.264 slice
+  // with the PPS id 100000
+  const std::vector<uint8_t> h264Sets{0x00, 0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0xC3, 0x50,
+                                      0xC8, 0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x0A,
+                                      0x00, 0x7D, 0x30, 0x00, 0x00, 0x01, 0x41, 0xC0, 0x00,
+                                      0x30, 0xD4, 0x30};
+  const std::vector<uint8_t> hevcSets{0x00, 0x00, 0x00, 0x01, 0x44, 0x01,
+                                      0x00, 0x00, 0xC3, 0x50, 0xD0};
+  for (const VideoCodec* codec : {&H264, &HEVC})
+  {
+    SCOPED_TRACE(codec->name);
+    // After the access unit delimiter of a P-frame
+    std::vector<uint8_t> frame{codec->frame};
+    const std::vector<uint8_t>& sets{codec == &H264 ? h264Sets : hevcSets};
+    frame.insert(frame.begin() + (codec == &H264 ? 6 : 7), sets.begin(), sets.end());
+    TSWriter writer{*codec};
+    writer.WriteTables(true);
+    for (int pts = 0; pts < SEGMENT_VIDEO_FRAMES; ++pts)
+      writer.WriteVideoFrame(pts, pts == 0 ? codec->keyFrame : pts == 2 ? frame : codec->frame);
+    Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+    kodi::addon::InputstreamInfo info;
+    info.SetStreamType(INPUTSTREAM_TYPE_VIDEO);
+    ASSERT_TRUE(m_reader->GetInformation(info));
+    int frames{0};
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample(), ++frames)
+      EXPECT_EQ(m_reader->PTS(), Time(VideoPts(frames)));
+    EXPECT_EQ(frames, SEGMENT_VIDEO_FRAMES);
+    EXPECT_FALSE(m_reader->GetInformation(info));
+  }
+}
+
+// Zero bytes can follow an H.264 SPS in the stream, so the SPS can be longer
+// than the buffer of the parser
+TEST_F(TSSampleReaderTest, ALongSpsKeepsTheFrames)
+{
+  // Before the PPS
+  std::vector<uint8_t> keyFrame{H264.keyFrame};
+  keyFrame.insert(keyFrame.begin() + 31, 300, 0);
+  TSWriter writer;
+  writer.WriteTables(true);
+  for (int pts = 0; pts < SEGMENT_VIDEO_FRAMES; ++pts)
+    writer.WriteVideoFrame(pts, pts % 5 ? H264.frame : keyFrame);
+  Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+  int frames{0};
+  bool started{false};
+  for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+       result = m_reader->ReadSample(), ++frames)
+    EXPECT_EQ(m_reader->PTS(), Time(VideoPts(frames)));
+  EXPECT_EQ(frames, SEGMENT_VIDEO_FRAMES);
+}
+
+// TS packets split the parameter sets. The stream information stays the same
+// as from whole access units.
+TEST(TSParserTest, ThePartsOfTheParameterSetsGiveTheSameStreamInformation)
+{
+  for (const VideoCodec* codec : {&H264, &HEVC, &MPEG2})
+  {
+    SCOPED_TRACE(codec->name);
+    const std::vector<std::vector<uint8_t>> accessUnits{codec->keyFrame, codec->frame,
+                                                        codec->keyFrame, codec->frame,
+                                                        codec->frame};
+    const ParsedInfo expected{ParseAccessUnits(*codec, accessUnits, SIZE_MAX)};
+    ASSERT_NE(expected.width, 0);
+    // The extra data has the parameter sets with 4 byte start codes, MPEG-2 has none
+    ASSERT_EQ(expected.extraData,
+              codec == &MPEG2 ? std::vector<uint8_t>{} : KeyFrameUnits(*codec, true));
+    for (const size_t chunk : {size_t{1}, size_t{7}, size_t{184}})
+    {
+      SCOPED_TRACE(testing::Message() << "chunk " << chunk);
+      EXPECT_EQ(ParseAccessUnits(*codec, accessUnits, chunk), expected);
+    }
+  }
+}
+
+// A 3 byte start code can start a parameter set, also at the start of the
+// data. The extra data has the parameter sets with 4 byte start codes.
+TEST(TSParserTest, TheExtraDataHasTheParameterSetsAfter3ByteStartCodes)
+{
+  const auto shortStartCodes = [](const std::vector<uint8_t>& au) {
+    std::vector<uint8_t> result;
+    for (size_t i = 0; i < au.size(); ++i)
+    {
+      if (i + 3 < au.size() && au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 0 && au[i + 3] == 1)
+        continue;
+      result.push_back(au[i]);
+    }
+    return result;
+  };
+  // Without the access unit delimiter, the VPS starts the data
+  const std::vector<uint8_t> keyFrame{shortStartCodes(
+      std::vector<uint8_t>(HEVC.keyFrame.begin() + 7, HEVC.keyFrame.end()))};
+  const std::vector<uint8_t> frame{shortStartCodes(HEVC.frame)};
+  const ParsedInfo expected{ParseAccessUnits(HEVC, {HEVC.keyFrame, HEVC.frame}, SIZE_MAX)};
+  EXPECT_EQ(ParseAccessUnits(HEVC, {keyFrame, frame}, SIZE_MAX), expected);
+}
+
 // An IDR or IRAP picture can use the parameter sets of an earlier picture,
 // which the decoder keeps after a seek. A seek lands on such a key frame, also
 // when the seek starts in a later segment without parameter sets.
@@ -629,7 +787,7 @@ TEST_F(TSSampleReaderTest, VideoSeekLandsOnAKeyFrameWithoutParameterSets)
   for (const VideoCodec* codec : {&H264, &HEVC})
   {
     SCOPED_TRACE(codec->name);
-    const std::vector<uint8_t> key{WithoutParameterSets(*codec)};
+    const std::vector<uint8_t> key{KeyFrameUnits(*codec, false)};
     ASSERT_LT(key.size(), codec->keyFrame.size());
     TSWriter writer{*codec};
     std::vector<uint8_t> segments[2];
@@ -677,7 +835,7 @@ TEST_F(TSSampleReaderTest, VideoSeekLandsOnAKeyFrameWithoutParameterSets)
 // not on an I picture without a sequence header.
 TEST_F(TSSampleReaderTest, MPEG2SeekLandsOnAnIPictureAfterASequenceHeader)
 {
-  const std::vector<uint8_t> iPicture{WithoutParameterSets(MPEG2)};
+  const std::vector<uint8_t> iPicture{KeyFrameUnits(MPEG2, false)};
   ASSERT_LT(iPicture.size(), MPEG2.keyFrame.size());
   TSWriter writer{MPEG2};
   writer.WriteTables(true);

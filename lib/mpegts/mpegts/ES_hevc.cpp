@@ -11,6 +11,7 @@
 #include "debug.h"
 
 #include <cstring>      // for memset memcpy
+#include <iterator>
 
 using namespace TSDemux;
 
@@ -49,16 +50,14 @@ void ES_hevc::Parse(STREAM_PKT* pkt)
   uint32_t startcode = m_StartCode;
   bool frameComplete = false;
 
-  if (m_NeedSPS)
-    stream_info.extra_data_size = 0;
-
   while (p < es_len)
   {
     startcode = startcode << 8 | es_buf[p++];
     if ((startcode & 0x00ffffff) == 0x00000001)
     {
+      // The NAL unit ends at the start code
       if (m_LastStartPos != -1)
-         Parse_HEVC(frame_ptr + m_LastStartPos, p - frame_ptr - m_LastStartPos, frameComplete);
+         Parse_HEVC(frame_ptr + m_LastStartPos, p - 3 - frame_ptr - m_LastStartPos, frameComplete);
       m_LastStartPos = p - frame_ptr; // save relative position from start
       if (frameComplete)
         break;
@@ -144,7 +143,12 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
   uint16_t header;
   HDR_NAL hdr;
 
+  // Zero bytes can follow the NAL unit, and the data can end in the
   // nal_unit_header
+  while (NumBytesInNalUnit > 0 && buf[NumBytesInNalUnit - 1] == 0)
+    --NumBytesInNalUnit;
+  if (NumBytesInNalUnit < 2)
+    return;
   header = (buf[0] << 8) | buf[1];
   if (header & 0x8000) // ignore forbidden_bit == 1
     return;
@@ -197,20 +201,9 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
     switch (hdr.nal_unit_type)
     {
     case NAL_VPS_NUT:
-      if (m_NeedVPS)
-      {
-        if (stream_info.extra_data_size + NumBytesInNalUnit <= sizeof(stream_info.extra_data))
-        {
-          memcpy(stream_info.extra_data + stream_info.extra_data_size, es_buf + (buf_ptr - 4), NumBytesInNalUnit);
-          stream_info.extra_data_size += NumBytesInNalUnit;
-          m_NeedVPS = false;
-        }
-        else
-        {
-          DBG(DEMUX_DBG_INFO, "HEVC fixme: stream_info.extra_data too small! %i\n", stream_info.extra_data_size + NumBytesInNalUnit);
-        }
-      }
-       break;
+      if (m_NeedVPS && AppendExtraData(buf, NumBytesInNalUnit))
+        m_NeedVPS = false;
+      break;
 
     case NAL_SPS_NUT:
     {
@@ -221,19 +214,8 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
         return;
       }
       Parse_SPS(buf, NumBytesInNalUnit, hdr);
-      if (m_NeedSPS)
-      {
-        if (stream_info.extra_data_size + NumBytesInNalUnit <= sizeof(stream_info.extra_data))
-        {
-          memcpy(stream_info.extra_data + stream_info.extra_data_size, es_buf + (buf_ptr - 4), NumBytesInNalUnit);
-          stream_info.extra_data_size += NumBytesInNalUnit;
-          m_NeedSPS = false;
-        }
-        else
-        {
-          DBG(DEMUX_DBG_INFO, "HEVC fixme: stream_info.extra_data too small! %i\n", stream_info.extra_data_size + NumBytesInNalUnit);
-        }
-      }
+      if (m_NeedSPS && AppendExtraData(buf, NumBytesInNalUnit))
+        m_NeedSPS = false;
       break;
     }
 
@@ -246,19 +228,8 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
         return;
       }
       Parse_PPS(buf, NumBytesInNalUnit);
-      if (m_NeedPPS)
-      {
-        if (stream_info.extra_data_size + NumBytesInNalUnit <= sizeof(stream_info.extra_data))
-        {
-          memcpy(stream_info.extra_data + stream_info.extra_data_size, es_buf + (buf_ptr - 4), NumBytesInNalUnit);
-          stream_info.extra_data_size += NumBytesInNalUnit;
-          m_NeedPPS = false;
-        }
-        else
-        {
-          DBG(DEMUX_DBG_INFO, "HEVC fixme: stream_info.extra_data too small! %i\n", stream_info.extra_data_size + NumBytesInNalUnit);
-        }
-      }
+      if (m_NeedPPS && AppendExtraData(buf, NumBytesInNalUnit))
+        m_NeedPPS = false;
       break;
     }
 
@@ -303,7 +274,10 @@ void ES_hevc::Parse_PPS(uint8_t *buf, int len)
 {
   CBitstream bs(buf, len*8, true);
 
-  int pps_id = bs.readGolombUE();
+  unsigned int pps_id = bs.readGolombUE();
+  // A corrupt stream can have an id outside the range of ids
+  if (pps_id >= std::size(m_streamData.pps))
+    return;
   int sps_id = bs.readGolombUE();
   m_streamData.pps[pps_id].sps = sps_id;
   m_streamData.pps[pps_id].dependent_slice_segments_enabled_flag = bs.readBits(1);

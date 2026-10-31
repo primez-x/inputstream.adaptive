@@ -135,6 +135,7 @@ namespace TSDemux
     uint64_t es_pes_start_position;
     uint32_t es_pes_start_segment;
     void ShiftPesStarts(size_t consumed);
+    bool AppendExtraData(const uint8_t* nal, size_t size); ///< Appends a NAL unit with a 4 byte start code
     bool   es_found_frame;        ///< Parser: Found frame
     bool   es_frame_valid;
     bool   es_extraDataChanged;

@@ -90,6 +90,7 @@ namespace TSDemux
 
     int             m_SPSRawId;
     int             m_PPSRawId;
+    size_t          m_LastStartPos; // The last NAL unit, relative to the frame start
 
     int Parse_H264(uint32_t startcode, int buf_ptr, bool &complete);
     bool Parse_PPS(uint8_t *buf, int len);

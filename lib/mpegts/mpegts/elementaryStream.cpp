@@ -89,6 +89,21 @@ const ElementaryStream::PesStart* ElementaryStream::GetPesStart(const unsigned c
   return NULL;
 }
 
+bool ElementaryStream::AppendExtraData(const uint8_t* nal, size_t size)
+{
+  uint8_t* ed = stream_info.extra_data + stream_info.extra_data_size;
+  if (stream_info.extra_data_size + 4 + size > sizeof(stream_info.extra_data))
+  {
+    DBG(DEMUX_DBG_INFO, "%s: stream_info.extra_data too small! %zu\n", GetStreamCodecName(),
+        stream_info.extra_data_size + 4 + size);
+    return false;
+  }
+  ed[0] = ed[1] = ed[2] = 0, ed[3] = 1;
+  memcpy(ed + 4, nal, size);
+  stream_info.extra_data_size += 4 + size;
+  return true;
+}
+
 void ElementaryStream::ShiftPesStarts(size_t consumed)
 {
   // Keep the last PES that starts at or before the new buffer start
