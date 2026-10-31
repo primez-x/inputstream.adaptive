@@ -103,6 +103,12 @@ namespace TSDemux
     bool GetStreamPacket(STREAM_PKT* pkt);
     virtual void Parse(STREAM_PKT* pkt);
 
+    void MarkPes();               ///< Mark the start of the current PES in the buffer
+    void ClearMark();
+    bool HasMark() const { return es_marked; }
+    bool IsMarked(const unsigned char* data) const; ///< True if packet data starts in the marked PES or later
+    bool HasOnlyMarkedData() const; ///< True if the next packet starts in the marked PES or later
+
   protected:
     void ResetStreamPacket(STREAM_PKT* pkt);
     uint64_t Rescale(uint64_t a, uint64_t b, uint64_t c);
@@ -116,6 +122,8 @@ namespace TSDemux
     size_t es_consumed;           ///< Consumed payload. Will be erased on next append
     size_t es_pts_pointer;        ///< Position in buffer where current PTS becomes applicable
     size_t es_parsed;             ///< Parser: Last processed position in buffer
+    bool   es_marked;             ///< MarkPes() set es_mark_pointer
+    size_t es_mark_pointer;       ///< Position in buffer where the marked PES starts
     bool   es_found_frame;        ///< Parser: Found frame
     bool   es_frame_valid;
     bool   es_extraDataChanged;

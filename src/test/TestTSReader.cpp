@@ -33,7 +33,13 @@ constexpr int SEGMENT_FRAMES = 30; // Audio frames
 constexpr int SEGMENT_VIDEO_FRAMES = 15;
 // The audio of the muxed segments starts before the video
 constexpr uint64_t AUDIO_LEAD = 1000;
+// Each segment has a different diff, so the tests see where the diff changes
 constexpr int64_t DIFF = 5000;
+
+int64_t SegmentDiff(int segment)
+{
+  return DIFF + segment * 1000;
+}
 
 uint64_t AudioPts(int frame)
 {
@@ -245,9 +251,9 @@ protected:
 
 // The demuxer emits a PES only when the next PES starts, so after a segment
 // change the reader still emits the frames of the previous segment. The offset
-// of the new segment must apply to the PTS of the first PES of that segment,
-// not to the next emitted frame.
-TEST_F(TSSampleReaderTest, PtsDiffStaysTheSameAcrossSegments)
+// of the new segment must apply from the first frame of that segment, with
+// the PTS of the first PES of that segment.
+TEST_F(TSSampleReaderTest, PtsDiffChangesWithTheFirstFrameOfASegment)
 {
   for (const bool pesLength : {true, false})
   for (const int framesPerPes : {1, 3})
@@ -265,7 +271,7 @@ TEST_F(TSSampleReaderTest, PtsDiffStaysTheSameAcrossSegments)
       writer.WriteAudio(AudioPts(s * SEGMENT_FRAMES), s * SEGMENT_FRAMES, SEGMENT_FRAMES,
                         framesPerPes, pesLength);
       segments[s] = writer.Take();
-      starts[s] = Time(AudioPts(s * SEGMENT_FRAMES)) - DIFF;
+      starts[s] = Time(AudioPts(s * SEGMENT_FRAMES)) - SegmentDiff(s);
     }
     Open(segments[0], starts[0], INPUTSTREAM_TYPE_AUDIO);
     int appended{1};
@@ -297,69 +303,87 @@ TEST_F(TSSampleReaderTest, PtsDiffStaysTheSameAcrossSegments)
       }
       EXPECT_EQ(FrameIndex(), i);
       EXPECT_EQ(m_reader->PTS(), Time(AudioPts(i)));
-      EXPECT_EQ(m_reader->GetPTSDiff(), DIFF);
+      EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(i / SEGMENT_FRAMES));
     }
   }
 }
 
-// The segments of the video set the offset. The audio of a segment can start
-// before the video, and the diff must not change to the audio start.
-TEST_F(TSSampleReaderTest, PtsDiffFollowsTheVideoOfMuxedSegments)
+// The segments of the video set the offset. The video parser emits a frame
+// only after the start of the next frame, so the last video frames of a
+// segment come after the PES header of the next segment. The audio of a
+// segment can start before the video, and the diff must not take the audio
+// start.
+TEST_F(TSSampleReaderTest, PtsDiffChangesWithTheVideoOfASegment)
 {
-  TSWriter writer;
-  std::vector<uint8_t> segments[SEGMENTS];
-  uint64_t starts[SEGMENTS];
-  for (int s = 0; s < SEGMENTS; ++s)
+  for (const bool withAudio : {false, true})
+  for (const int framesPerPes : {1, 3})
   {
-    writer.WriteTables(true);
-    // A muxer interleaves the PES packets by PTS
-    int audio{s * SEGMENT_FRAMES};
-    int video{s * SEGMENT_VIDEO_FRAMES};
-    while (audio < (s + 1) * SEGMENT_FRAMES || video < (s + 1) * SEGMENT_VIDEO_FRAMES)
+    SCOPED_TRACE(testing::Message() << (withAudio ? "video and audio, " : "video, ")
+                                    << framesPerPes << " audio frames per PES");
+    TSWriter writer;
+    std::vector<uint8_t> segments[SEGMENTS];
+    uint64_t starts[SEGMENTS];
+    for (int s = 0; s < SEGMENTS; ++s)
     {
-      if (video == (s + 1) * SEGMENT_VIDEO_FRAMES ||
-          (audio < (s + 1) * SEGMENT_FRAMES && AudioPts(audio) - AUDIO_LEAD <= VideoPts(video)))
+      writer.WriteTables(true);
+      // A muxer interleaves the PES packets by PTS
+      int audio{s * SEGMENT_FRAMES};
+      int video{s * SEGMENT_VIDEO_FRAMES};
+      while (audio < (s + 1) * SEGMENT_FRAMES || video < (s + 1) * SEGMENT_VIDEO_FRAMES)
       {
-        writer.WriteAudio(AudioPts(audio) - AUDIO_LEAD, audio, 3, 3, false);
-        audio += 3;
+        if (video == (s + 1) * SEGMENT_VIDEO_FRAMES ||
+            (audio < (s + 1) * SEGMENT_FRAMES && AudioPts(audio) - AUDIO_LEAD <= VideoPts(video)))
+        {
+          writer.WriteAudio(AudioPts(audio) - AUDIO_LEAD, audio, framesPerPes, framesPerPes,
+                            false);
+          audio += framesPerPes;
+        }
+        else
+          writer.WriteVideo(video++, 1);
+      }
+      segments[s] = writer.Take();
+      starts[s] = Time(VideoPts(s * SEGMENT_VIDEO_FRAMES)) - SegmentDiff(s);
+    }
+    Open(segments[0], starts[0], INPUTSTREAM_TYPE_VIDEO);
+    for (int s = 1; s < SEGMENTS; ++s)
+      AppendSegment(segments[s], starts[s]);
+    if (withAudio)
+      m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+
+    bool started{false};
+    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+    int video{0};
+    int audio{0};
+    // One diff serves both streams. The diff of a segment applies from the
+    // first frame of that segment after the last video frame of the previous
+    // segment.
+    int segment{0};
+    do
+    {
+      SCOPED_TRACE(testing::Message() << "video frame " << video << ", audio frame " << audio);
+      const bool isVideo{m_reader->GetStreamId() == VIDEO_ID};
+      const int frameSegment{isVideo ? video / SEGMENT_VIDEO_FRAMES : audio / SEGMENT_FRAMES};
+      if (frameSegment > segment && video >= frameSegment * SEGMENT_VIDEO_FRAMES)
+        segment = frameSegment;
+      if (isVideo)
+      {
+        EXPECT_EQ(m_reader->PTS(), Time(VideoPts(video)));
+        ++video;
       }
       else
-        writer.WriteVideo(video++, 1);
-    }
-    segments[s] = writer.Take();
-    starts[s] = Time(VideoPts(s * SEGMENT_VIDEO_FRAMES)) - DIFF;
+      {
+        EXPECT_EQ(FrameIndex(), audio);
+        EXPECT_EQ(m_reader->PTS(), Time(AudioPts(audio) - AUDIO_LEAD));
+        ++audio;
+      }
+      EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(segment));
+    } while (AP4_SUCCEEDED(m_reader->ReadSample()));
+
+    // The last PES of each stream has no next PES. The video parser also waits
+    // for the start of the next frame.
+    EXPECT_EQ(video, SEGMENTS * SEGMENT_VIDEO_FRAMES - 2);
+    EXPECT_EQ(audio, withAudio ? SEGMENTS * SEGMENT_FRAMES - framesPerPes : 0);
   }
-  Open(segments[0], starts[0], INPUTSTREAM_TYPE_VIDEO);
-  for (int s = 1; s < SEGMENTS; ++s)
-    AppendSegment(segments[s], starts[s]);
-  m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
-
-  bool started{false};
-  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
-  int video{0};
-  int audio{0};
-  do
-  {
-    if (m_reader->GetStreamId() == VIDEO_ID)
-    {
-      SCOPED_TRACE(testing::Message() << "video frame " << video);
-      EXPECT_EQ(m_reader->PTS(), Time(VideoPts(video)));
-      ++video;
-    }
-    else
-    {
-      SCOPED_TRACE(testing::Message() << "audio frame " << audio);
-      EXPECT_EQ(FrameIndex(), audio);
-      EXPECT_EQ(m_reader->PTS(), Time(AudioPts(audio) - AUDIO_LEAD));
-      ++audio;
-    }
-    EXPECT_EQ(m_reader->GetPTSDiff(), DIFF);
-  } while (AP4_SUCCEEDED(m_reader->ReadSample()));
-
-  // The last PES of each stream has no next PES. The video parser also waits
-  // for the start of the next frame.
-  EXPECT_EQ(video, SEGMENTS * SEGMENT_VIDEO_FRAMES - 2);
-  EXPECT_EQ(audio, SEGMENTS * SEGMENT_FRAMES - 3);
 }
 
 // A seek to the last frame of the stream lands on that frame. A seek past the
@@ -407,7 +431,7 @@ TEST_F(TSSampleReaderTest, SeekWaitsForTheNextLiveSegment)
   EXPECT_FALSE(m_reader->EOS());
   EXPECT_EQ(m_reader->PTS(), target);
 
-  AppendSegment(segments[1], Time(AudioPts(SEGMENT_FRAMES)) - DIFF);
+  AppendSegment(segments[1], Time(AudioPts(SEGMENT_FRAMES)) - SegmentDiff(1));
   m_segments->m_waitingForSegment = false;
   for (int i = SEGMENT_FRAMES; i < SEGMENT_FRAMES + 3; ++i)
   {
@@ -415,6 +439,6 @@ TEST_F(TSSampleReaderTest, SeekWaitsForTheNextLiveSegment)
     ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
     EXPECT_EQ(FrameIndex(), i);
     EXPECT_EQ(m_reader->PTS(), Time(AudioPts(i)));
-    EXPECT_EQ(m_reader->GetPTSDiff(), DIFF);
+    EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(1));
   }
 }

@@ -23,7 +23,13 @@ constexpr uint64_t BASE_MS = 100000; // 100 s
 constexpr uint64_t FRAME_MS = 20;
 constexpr int CLUSTERS = 3;
 constexpr int CLUSTER_FRAMES = 10;
+// Each segment has a different diff, so the tests see where the diff changes
 constexpr int64_t DIFF = 5000;
+
+int64_t SegmentDiff(int segment)
+{
+  return DIFF + segment * 1000;
+}
 
 // PTS of a frame in the microseconds of the sample reader
 uint64_t FrameTime(int frame)
@@ -131,11 +137,11 @@ protected:
 // After the last frame of a cluster, that read switches to the next segment,
 // and the session sets the offset of the next segment. The offset must apply
 // to the first frame of the next segment, not to the last frame of the cluster.
-TEST_F(WebmSampleReaderTest, PtsDiffStaysTheSameAcrossSegments)
+TEST_F(WebmSampleReaderTest, PtsDiffChangesWithTheFirstFrameOfASegment)
 {
   Open();
   for (int c = 0; c < CLUSTERS; ++c)
-    AppendSegment(Cluster(c), FrameTime(c * CLUSTER_FRAMES) - DIFF);
+    AppendSegment(Cluster(c), FrameTime(c * CLUSTER_FRAMES) - SegmentDiff(c));
 
   bool started{false};
   ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
@@ -146,7 +152,7 @@ TEST_F(WebmSampleReaderTest, PtsDiffStaysTheSameAcrossSegments)
       ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
     EXPECT_EQ(FrameIndex(), i);
     EXPECT_EQ(m_reader->PTS(), FrameTime(i));
-    EXPECT_EQ(m_reader->GetPTSDiff(), DIFF);
+    EXPECT_EQ(m_reader->GetPTSDiff(), SegmentDiff(i / CLUSTER_FRAMES));
   }
   EXPECT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
 }

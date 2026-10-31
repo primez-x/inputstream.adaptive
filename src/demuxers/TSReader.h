@@ -45,6 +45,11 @@ public:
    * \return The PTS, or PTS_UNSET while the PES is not read yet
    */
   uint64_t GetSegmentPts() const { return m_segmentPts; }
+  /*!
+   * \brief True if the packet is from the new segment, and the stream of
+   *        GetSegmentPts() has no packets of the previous segment left.
+   */
+  bool IsSegmentPacket() const;
 
   uint64_t GetDts() const { return m_pkt.dts == PTS_UNSET ? PTS_UNSET : m_pkt.dts; }
   uint64_t GetPts() const { return m_pkt.pts == PTS_UNSET ? PTS_UNSET : m_pkt.pts; }
@@ -56,7 +61,7 @@ public:
 private:
   bool GetPacket();
   bool HasVideo() const;
-  void UpdateSegmentPts(const TSDemux::ElementaryStream* stream);
+  void UpdateSegmentPts(TSDemux::ElementaryStream* stream);
   bool HandleProgramChange();
   bool HandleStreamChange(uint16_t pid);
 
@@ -68,8 +73,9 @@ private:
   AP4_Position m_startPos;
   uint32_t m_requiredMask;
   uint32_t m_typeMask;
-  bool m_segmentPtsPending{false};
+  bool m_segmentStart{false};
   uint64_t m_segmentPts{PTS_UNSET};
+  uint16_t m_segmentPid{0};
 
   struct TSINFO
   {

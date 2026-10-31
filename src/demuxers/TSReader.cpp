@@ -276,7 +276,7 @@ bool TSReader::ReadPacket(bool scanStreamInfo)
 
     if (m_AVContext->HasPIDPayload())
     {
-      const TSDemux::ElementaryStream* stream{m_AVContext->GetPIDStream()};
+      TSDemux::ElementaryStream* stream{m_AVContext->GetPIDStream()};
       const uint32_t pesPtsCount{stream ? stream->pes_pts_count : 0};
       status = m_AVContext->ProcessTSPayload();
       // Take the PTS before the parser of the stream advances the PTS frame by frame
@@ -330,25 +330,42 @@ bool TSReader::HasVideo() const
 
 void TSReader::MarkSegmentStart()
 {
-  m_segmentPtsPending = true;
+  m_segmentStart = true;
   m_segmentPts = PTS_UNSET;
+  for (auto& tsInfo : m_streamInfos)
+    tsInfo.m_stream->ClearMark();
 }
 
-void TSReader::UpdateSegmentPts(const TSDemux::ElementaryStream* stream)
+bool TSReader::IsSegmentPacket() const
 {
-  if (!m_segmentPtsPending)
+  // The demuxer still holds frames of the previous segment when the segment
+  // changes, and emits them before the frames of the new segment
+  const TSDemux::ElementaryStream* stream{m_AVContext->GetStream(m_pkt.pid)};
+  const TSDemux::ElementaryStream* segmentStream{m_AVContext->GetStream(m_segmentPid)};
+  return stream && stream->IsMarked(m_pkt.data) && segmentStream &&
+         segmentStream->HasOnlyMarkedData();
+}
+
+void TSReader::UpdateSegmentPts(TSDemux::ElementaryStream* stream)
+{
+  if (!m_segmentStart)
     return;
 
   for (const auto& tsInfo : m_streamInfos)
   {
+    if (tsInfo.m_stream != stream || !tsInfo.m_enabled)
+      continue;
+
+    // The first PES of each stream in the new segment
+    if (!stream->HasMark())
+      stream->MarkPes();
     // With video, the audio PES can start before the video PES in some segments
-    if (tsInfo.m_stream == stream && tsInfo.m_enabled &&
-        (tsInfo.m_streamType == INPUTSTREAM_TYPE_VIDEO || !HasVideo()))
+    if (m_segmentPts == PTS_UNSET && (tsInfo.m_streamType == INPUTSTREAM_TYPE_VIDEO || !HasVideo()))
     {
       m_segmentPts = stream->c_pts;
-      m_segmentPtsPending = false;
-      return;
+      m_segmentPid = stream->pid;
     }
+    return;
   }
 }
 

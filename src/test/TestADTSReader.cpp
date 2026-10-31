@@ -399,12 +399,14 @@ TEST_F(ADTSSampleReaderTest, Eac3ReadsThePaddedEndOfASegment)
 
 // The session sets the PTS offset of the next segment when the stream switches
 // to that segment. The PTS diff compares the offset with the first sample of
-// that segment, so the diff stays the same across the segment change. Before,
-// the last sample of a segment took the offset of the next segment, and the
-// diff was one frame wrong until the next seek.
-TEST_F(ADTSSampleReaderTest, PtsDiffStaysTheSameAcrossSegments)
+// that segment, and the new diff applies from that sample. Before, the last
+// sample of a segment took the offset of the next segment, and the diff was
+// one frame wrong until the next seek.
+TEST_F(ADTSSampleReaderTest, PtsDiffChangesWithTheFirstFrameOfASegment)
 {
+  // Each segment has a different diff, so the test sees where the diff changes
   constexpr int64_t DIFF{5000};
+  constexpr int64_t NEXT_DIFF{6000};
   const struct
   {
     const char* name;
@@ -439,7 +441,7 @@ TEST_F(ADTSSampleReaderTest, PtsDiffStaysTheSameAcrossSegments)
       }
       OpenSegment(segments[0], starts[0] * 100 / 9 - DIFF);
       if (!late)
-        AppendSegment(segments[1], starts[1] * 100 / 9 - DIFF);
+        AppendSegment(segments[1], starts[1] * 100 / 9 - NEXT_DIFF);
       m_segments->m_waitingForSegment = late;
 
       ASSERT_TRUE(
@@ -452,14 +454,14 @@ TEST_F(ADTSSampleReaderTest, PtsDiffStaysTheSameAcrossSegments)
           // The live stream waits for the next segment
           ASSERT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
           ASSERT_FALSE(m_reader->EOS());
-          AppendSegment(segments[1], starts[1] * 100 / 9 - DIFF);
+          AppendSegment(segments[1], starts[1] * 100 / 9 - NEXT_DIFF);
           m_segments->m_waitingForSegment = false;
         }
         if (i > FRAMES - 3)
           ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
         EXPECT_EQ(FrameIndex(), i);
         EXPECT_EQ(m_reader->PTS(), FrameTime(BASE_PTS, i, codec.samples, codec.rate));
-        EXPECT_EQ(m_reader->GetPTSDiff(), DIFF);
+        EXPECT_EQ(m_reader->GetPTSDiff(), i < FRAMES ? DIFF : NEXT_DIFF);
       }
     }
   }

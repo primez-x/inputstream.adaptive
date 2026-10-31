@@ -92,7 +92,7 @@ AP4_Result CTSSampleReader::ReadSample()
     m_dts = (GetDts() == PTS_UNSET) ? STREAM_NOPTS_VALUE : (GetDts() * 100) / 9;
     m_pts = (GetPts() == PTS_UNSET) ? STREAM_NOPTS_VALUE : (GetPts() * 100) / 9;
 
-    if (~m_ptsOffs && GetSegmentPts() != PTS_UNSET)
+    if (~m_ptsOffs && GetSegmentPts() != PTS_UNSET && IsSegmentPacket())
     {
       m_ptsDiff = (GetSegmentPts() * 100) / 9 - m_ptsOffs;
       m_ptsOffs = ~0ULL;
@@ -122,7 +122,8 @@ void CTSSampleReader::SetPTSOffset(uint64_t offset)
   m_ptsOffs = offset;
   // The demuxer emits a PES only when the next PES starts. So after a segment
   // change, the next samples are still from the previous segment, and the
-  // offset applies to the first PES of the new segment.
+  // offset applies from the first PES of the new segment. With muxed streams,
+  // the frames of the video set the time of the change.
   MarkSegmentStart();
 }
 

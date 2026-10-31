@@ -32,6 +32,8 @@ ElementaryStream::ElementaryStream(uint16_t pes_pid)
   , es_consumed(0)
   , es_pts_pointer(0)
   , es_parsed(0)
+  , es_marked(false)
+  , es_mark_pointer(0)
   , es_found_frame(false)
   , es_frame_valid(false)
   , es_extraDataChanged(false)
@@ -59,6 +61,30 @@ void ElementaryStream::Reset(void)
 void ElementaryStream::ClearBuffer()
 {
   es_len = es_consumed = es_pts_pointer = es_parsed = 0;
+  // The data of the marked PES and of the PES before is gone, later data is newer
+  es_mark_pointer = 0;
+}
+
+void ElementaryStream::MarkPes()
+{
+  es_marked = true;
+  es_mark_pointer = es_pts_pointer;
+}
+
+void ElementaryStream::ClearMark()
+{
+  es_marked = false;
+}
+
+bool ElementaryStream::IsMarked(const unsigned char* data) const
+{
+  // The parsers also assign a frame to a PES by the position of the frame start
+  return es_marked && es_buf && data >= es_buf + es_mark_pointer;
+}
+
+bool ElementaryStream::HasOnlyMarkedData() const
+{
+  return es_marked && es_consumed >= es_mark_pointer;
 }
 
 int ElementaryStream::Append(const unsigned char* buf, size_t len, bool new_pts)
@@ -78,6 +104,10 @@ int ElementaryStream::Append(const unsigned char* buf, size_t len, bool new_pts)
         es_pts_pointer -= es_consumed;
       else
         es_pts_pointer = 0;
+      if (es_mark_pointer > es_consumed)
+        es_mark_pointer -= es_consumed;
+      else
+        es_mark_pointer = 0;
 
       es_consumed = 0;
     }
