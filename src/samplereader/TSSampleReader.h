@@ -9,7 +9,9 @@
 #include "SampleReader.h"
 #include "demuxers/TSReader.h"
 
+#include <deque>
 #include <optional>
+#include <vector>
 
 // forwards
 class CAdaptiveByteStream;
@@ -41,10 +43,22 @@ public:
   void SetPTSOffset(uint64_t offset) override;
   int64_t GetPTSDiff() const override { return m_ptsDiff; }
   uint32_t GetTimeScale() const override { return 90000; }
-  AP4_UI32 GetStreamId() const override { return m_typeMap[GetStreamType()]; }
-  AP4_Size GetSampleDataSize() const override { return GetPacketSize(); }
-  const AP4_Byte* GetSampleData() const override { return GetPacketData(); }
-  uint64_t GetDuration() const override { return (TSReader::GetDuration() * 100) / 9; }
+  AP4_UI32 GetStreamId() const override
+  {
+    return m_sample ? m_sample->streamId : m_typeMap[GetStreamType()];
+  }
+  AP4_Size GetSampleDataSize() const override
+  {
+    return m_sample ? static_cast<AP4_Size>(m_sample->data.size()) : GetPacketSize();
+  }
+  const AP4_Byte* GetSampleData() const override
+  {
+    return m_sample ? m_sample->data.data() : GetPacketData();
+  }
+  uint64_t GetDuration() const override
+  {
+    return ((m_sample ? m_sample->duration : TSReader::GetDuration()) * 100) / 9;
+  }
   bool IsEncrypted() const override { return false; }
 
 protected:
@@ -63,5 +77,19 @@ private:
   bool m_started{false};
   std::optional<uint64_t> m_seekTime; // A seek that waits for a live segment
   bool m_seekPreceeding{false};
+  struct Sample
+  {
+    AP4_UI32 streamId;
+    uint64_t dts;
+    uint64_t pts;
+    uint64_t duration;
+    int64_t ptsDiff;
+    std::vector<AP4_Byte> data;
+  };
+  // The session aligns the other streams to the PTS of the frame of a seek,
+  // so that frame comes first. The samples of other streams read before the
+  // frame follow the frame.
+  std::deque<Sample> m_samples;
+  std::optional<Sample> m_sample; // The current sample, from m_samples
   CAdaptiveByteStream* m_adByteStream;
 };

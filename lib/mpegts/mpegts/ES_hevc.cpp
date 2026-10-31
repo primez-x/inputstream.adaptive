@@ -35,7 +35,9 @@ ES_hevc::~ES_hevc()
 
 void ES_hevc::Parse(STREAM_PKT* pkt)
 {
-  if (es_parsed + 10 > es_len) // 2*startcode + header + trail bits
+  // 2*startcode + header + trail bits. At the end of the data, the last NAL
+  // unit can be read up to the end of the buffer already.
+  if (es_parsed + 10 > es_len && !es_end_of_data)
     return;
 
   size_t frame_ptr = es_consumed;
@@ -106,12 +108,14 @@ void ES_hevc::Parse(STREAM_PKT* pkt)
       pkt->pts      = m_PTS;
       pkt->duration = duration;
       pkt->streamChange = streamChange;
+      pkt->recoveryPoint = m_recoveryPoint;
     }
     m_StartCode = 0xffffffff;
     m_LastStartPos = -1;
     es_parsed = es_consumed;
     es_found_frame = false;
     es_frame_valid = true;
+    m_recoveryPoint = false;
   }
 }
 
@@ -123,6 +127,7 @@ void ES_hevc::Reset()
   m_NeedVPS = true;
   m_NeedSPS = true;
   m_NeedPPS = true;
+  m_recoveryPoint = false;
   memset(&m_streamData, 0, sizeof(m_streamData));
 }
 
@@ -162,6 +167,8 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
 
     if (!es_found_frame)
     {
+      // A BLA, IDR or CRA picture starts a decode
+      m_recoveryPoint = hdr.nal_unit_type >= NAL_BLA_W_LP;
       if (buf_ptr - 3 >= (int)es_pts_pointer)
       {
         m_DTS = c_dts;

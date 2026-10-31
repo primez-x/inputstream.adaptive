@@ -214,9 +214,17 @@ bool TSReader::GetInformation(kodi::addon::InputstreamInfo& info)
 // We assume that m_startpos is the current I-Frame position
 bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
 {
-  const bool hasVideo{HasVideo()};
+  // With video, the read after a seek to a segment start starts with the
+  // first video frame
+  std::optional<SeekFrame> startFrame;
+  for (const auto& tsInfo : m_streamInfos)
+  {
+    if (tsInfo.m_enabled && tsInfo.m_streamType == INPUTSTREAM_TYPE_VIDEO)
+      startFrame = SeekFrame{tsInfo.m_stream->pid, 0};
+  }
+  const bool hasVideo{startFrame.has_value()};
   uint64_t lastRecovery(static_cast<uint64_t>(m_startPos));
-  std::optional<SeekFrame> seekFrame; // The frame at lastRecovery or later
+  std::optional<SeekFrame> seekFrame{startFrame}; // The frame at lastRecovery or later
   // The stream cannot seek back into a segment after a read of the next
   // segment. So the scan reads the frames left in the buffers at the end of a
   // segment, before the next segment.
@@ -236,7 +244,7 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
       // The seek time is after the frames of this segment
       nextSegment = true;
       lastRecovery = m_AVContext->GetPosition();
-      seekFrame.reset();
+      seekFrame = startFrame;
       continue;
     }
     nextSegment = false;
@@ -445,13 +453,16 @@ bool TSReader::IsBeforeSeekFrame()
 
 void TSReader::UpdateSegmentPts(TSDemux::ElementaryStream* stream)
 {
-  // The PES header is in the segment of the last read. A seek inside the
-  // segment reads the PES headers again. The read of the stream information
-  // reads the first segment before the streams are enabled.
-  auto& segmentPts{m_segments.back().pts};
-  if (std::none_of(segmentPts.begin(), segmentPts.end(),
+  // The PES belongs to the segment where the PES starts, the header can end
+  // in the next segment. A seek inside the segment reads the PES headers
+  // again. The read of the stream information reads the first segment before
+  // the streams are enabled.
+  const auto segment{std::find_if(m_segments.begin(), m_segments.end(), [stream](const Segment& s)
+                                  { return s.number == stream->GetPesSegment(); })};
+  if (segment != m_segments.end() &&
+      std::none_of(segment->pts.begin(), segment->pts.end(),
                    [stream](const auto& pts) { return pts.first == stream->pid; }))
-    segmentPts.emplace_back(stream->pid, stream->c_pts);
+    segment->pts.emplace_back(stream->pid, stream->c_pts);
 }
 
 bool TSReader::HandleProgramChange()

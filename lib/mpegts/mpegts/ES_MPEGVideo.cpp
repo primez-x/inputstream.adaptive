@@ -115,11 +115,13 @@ void ES_MPEG2Video::Parse(STREAM_PKT *pkt)
       pkt->pts          = m_PTS;
       pkt->duration     = m_FrameDuration;
       pkt->streamChange = streamChange;
+      pkt->recoveryPoint = m_recoveryPoint;
     }
     m_StartCode = 0xffffffff;
     es_parsed = es_consumed;
     es_found_frame = false;
     es_frame_valid = true;
+    m_recoveryPoint = false;
   }
 }
 
@@ -129,6 +131,7 @@ void ES_MPEG2Video::Reset()
   m_StartCode = 0xffffffff;
   m_NeedIFrame = true;
   m_NeedSPS = true;
+  m_recoveryPoint = false;
 }
 
 int ES_MPEG2Video::Parse_MPEG2Video(uint32_t startcode, int buf_ptr, bool &complete)
@@ -271,6 +274,7 @@ bool ES_MPEG2Video::Parse_MPEG2Video_PicStart(uint8_t *buf)
   if (pct < PKT_I_FRAME || pct > PKT_B_FRAME)
     return true; /* Illegal picture_coding_type */
 
+  m_recoveryPoint = pct == PKT_I_FRAME;
   if (pct == PKT_I_FRAME)
     m_NeedIFrame = false;
 

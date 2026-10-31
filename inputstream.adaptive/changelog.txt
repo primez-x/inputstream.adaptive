@@ -8,6 +8,10 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix a seek in a TS audio stream that continued at the first frame of the PES instead of at the frame of the seek time
 - Fix a seek in a TS stream with video and audio that continued at the key frame before the key frame of the seek time
 - Fix a seek to an earlier time inside the current segment, which continued at the start of the segment instead of at the frame of the seek time
+- Fix a seek in a TS stream with video and audio that returned an audio frame first, so the other streams aligned to the audio time instead of the video frame of the seek
+- Fix a seek in an HEVC or MPEG-2 TS stream, which continued at the segment start instead of at the key frame of the seek time
+- Fix the end of an HEVC TS stream after a PES without data, which did not play the last frame
+- Fix the timing offset of a TS segment whose first PES header starts in the segment before
 
 v21.5.25-p3i.3 (2026-10-30)
 - Fix a seek in a live HLS stream that ended the audio when the next audio segment was not available yet

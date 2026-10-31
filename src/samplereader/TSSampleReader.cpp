@@ -67,6 +67,17 @@ AP4_Result CTSSampleReader::Start(bool& bStarted)
 
 AP4_Result CTSSampleReader::ReadSample()
 {
+  m_sample.reset();
+  if (!m_samples.empty() && !GetSeekFramePts())
+  {
+    m_sample = std::move(m_samples.front());
+    m_samples.pop_front();
+    m_dts = m_sample->dts;
+    m_pts = m_sample->pts;
+    m_ptsDiff = m_sample->ptsDiff;
+    return AP4_SUCCESS;
+  }
+
   if (m_seekTime)
   {
     // The seek continues from the start of the next segment
@@ -87,6 +98,12 @@ AP4_Result CTSSampleReader::ReadSample()
 
     if (const std::optional<SegmentStart> start{GetSegmentStart()})
       m_ptsDiff = (start->pts * 100) / 9 - start->offset;
+    if (GetSeekFramePts())
+    {
+      m_samples.push_back({GetStreamId(), m_dts, m_pts, TSReader::GetDuration(), m_ptsDiff,
+                           {GetPacketData(), GetPacketData() + GetPacketSize()}});
+      continue;
+    }
     return AP4_SUCCESS;
   }
   return EndOfData();
@@ -99,6 +116,8 @@ AP4_Result CTSSampleReader::EndOfData()
     // The session aligns the other streams to the PTS of a video seek
     if (m_seekTime)
       m_pts = *m_seekTime;
+    else if (const std::optional<uint64_t> pts{GetSeekFramePts()})
+      m_pts = (*pts * 100) / 9;
   }
   else
   {
@@ -125,6 +144,8 @@ void CTSSampleReader::Reset(bool bEOS)
   TSReader::Reset();
   m_eos = bEOS;
   m_seekTime.reset();
+  m_samples.clear();
+  m_sample.reset();
 }
 
 bool CTSSampleReader::TimeSeek(uint64_t pts, bool preceeding)

@@ -72,6 +72,13 @@ public:
    *        other streams start at the same position.
    */
   bool IsBeforeSeekFrame();
+  /*!
+   * \brief The PTS of the frame that the last seek found, until the frame is read
+   */
+  std::optional<uint64_t> GetSeekFramePts() const
+  {
+    return m_seekFrame ? std::optional<uint64_t>{m_seekFrame->pts} : std::nullopt;
+  }
 
   uint64_t GetDts() const { return m_pkt.dts == PTS_UNSET ? PTS_UNSET : m_pkt.dts; }
   uint64_t GetPts() const { return m_pkt.pts == PTS_UNSET ? PTS_UNSET : m_pkt.pts; }

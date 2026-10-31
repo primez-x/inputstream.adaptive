@@ -80,6 +80,7 @@ namespace TSDemux
     bool            m_NeedVPS;
     bool            m_NeedSPS;
     bool            m_NeedPPS;
+    bool            m_recoveryPoint;  ///< The frame is an IRAP picture
     int             m_Width;
     int             m_Height;
     int             m_FpsScale;
