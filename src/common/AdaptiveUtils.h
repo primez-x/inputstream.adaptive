@@ -111,6 +111,16 @@ bool ParseRangeValues(std::string_view range,
                       char separator = '@');
 
 /*!
+ * \brief Convert a time in a timescale to microseconds (STREAM_TIME_BASE). The
+ *        result is rounded down, as the PTS offsets of the streams, and has no
+ *        overflow.
+ * \param time The time in the timescale
+ * \param timescale The timescale, not 0
+ * \return The time in microseconds
+ */
+uint64_t TimeToUs(uint64_t time, uint64_t timescale);
+
+/*!
  * \brief Create a Movie atom based on stream properties and info.
  * \param adStream The adaptive stream
  * \param streamInfo The stream info

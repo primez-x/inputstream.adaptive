@@ -312,8 +312,9 @@ enum class EVENT_TYPE
 
     // Defines the event to start the stream, the status will be resetted by start stream method.
     EVENT_TYPE m_startEvent{EVENT_TYPE::STREAM_START};
-    // The reader of the old representation reads no data of the new one
-    bool m_oldRepresentationEnded{false};
+    // The reader of the old representation reads no data of the new one. Set by
+    // the reader thread, read by the session.
+    std::atomic<bool> m_oldRepresentationEnded{false};
 
     // Class ID for debug log purpose, allow the LOG prints of each AdaptiveStream to be distinguished
     uint32_t clsId;

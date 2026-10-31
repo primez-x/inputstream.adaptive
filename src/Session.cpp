@@ -1180,21 +1180,26 @@ bool CSession::SeekTime(double seekTime, unsigned int streamId, bool preceeding)
   if (seekTime < 0)
     seekTime = 0;
 
-  // Check if we leave our current period
-  double chapterTime{0};
+  // Round to the nearest microsecond. A time above the exact value skips a key
+  // frame at the seek time.
+  uint64_t seekTimeCorrected{static_cast<uint64_t>(std::llround(seekTime * STREAM_TIME_BASE))};
+
+  // Check if we leave our current period. The chapter starts have whole
+  // microseconds, as in GetChapterStartTime.
+  uint64_t chapterTime{0};
   auto pi = m_adaptiveTree->m_periods.cbegin();
 
   for (; pi != m_adaptiveTree->m_periods.cend(); pi++)
   {
-    chapterTime += double((*pi)->GetDuration()) / (*pi)->GetTimescale();
-    if (chapterTime > seekTime)
+    chapterTime += TimeToUs((*pi)->GetDuration(), (*pi)->GetTimescale());
+    if (chapterTime > seekTimeCorrected)
       break;
   }
 
   if (pi == m_adaptiveTree->m_periods.cend())
     --pi;
 
-  chapterTime -= double((*pi)->GetDuration()) / (*pi)->GetTimescale();
+  chapterTime -= TimeToUs((*pi)->GetDuration(), (*pi)->GetTimescale());
 
   if ((*pi).get() != m_adaptiveTree->m_currentPeriod)
   {
@@ -1205,12 +1210,11 @@ bool CSession::SeekTime(double seekTime, unsigned int streamId, bool preceeding)
     return true;
   }
 
-  seekTime -= chapterTime;
+  seekTimeCorrected -= chapterTime;
 
   // don't try to seek past the end of the stream, leave a sensible amount so we can buffer properly
   if (m_adaptiveTree->IsLive())
   {
-    double maxSeek{0};
     uint64_t curTime;
     uint64_t maxTime{0};
     for (auto& stream : m_streams)
@@ -1221,18 +1225,16 @@ bool CSession::SeekTime(double seekTime, unsigned int streamId, bool preceeding)
       }
     }
 
-    maxSeek = (static_cast<double>(maxTime) / 1000) - m_adaptiveTree->m_liveDelay;
-    if (maxSeek < 0)
-      maxSeek = 0;
+    const uint64_t maxTimeUs{maxTime * 1000};
+    const uint64_t liveDelayUs{m_adaptiveTree->m_liveDelay * STREAM_TIME_BASE};
+    const uint64_t maxSeek{maxTimeUs > liveDelayUs ? maxTimeUs - liveDelayUs : 0};
 
-    if (seekTime > maxSeek)
-      seekTime = maxSeek;
+    if (seekTimeCorrected > maxSeek)
+      seekTimeCorrected = maxSeek;
   }
+  seekTime = static_cast<double>(seekTimeCorrected) / STREAM_TIME_BASE;
 
   // correct for starting segment pts value of chapter and chapter offset within program
-  // Round to the nearest microsecond. A time above the exact value skips a key
-  // frame at the seek time.
-  uint64_t seekTimeCorrected{static_cast<uint64_t>(std::llround(seekTime * STREAM_TIME_BASE))};
   int64_t ptsDiff{0};
   if (m_timingStream)
   {
@@ -1344,16 +1346,22 @@ void CSession::OnSegmentChanged(adaptive::AdaptiveStream* adStream)
 
 bool CSession::CheckChange()
 {
+  // A reader thread notifies the change. The change waits until no reader
+  // works, then the state of the readers and of the streams is complete.
   for (const auto& stream : m_streams)
   {
     ISampleReader* reader{stream->GetReader()};
-    if (stream->m_isEnabled && stream->m_adStream.IsOldRepresentationEnded() && reader &&
-        (reader->IsReadSampleAsyncWorking() || !reader->EOS()))
+    if (stream->m_isEnabled && reader && reader->IsReadSampleAsyncWorking())
       return false;
   }
-  const bool changed{m_changed};
-  m_changed = false;
-  return changed;
+  for (const auto& stream : m_streams)
+  {
+    ISampleReader* reader{stream->GetReader()};
+    if (stream->m_isEnabled && reader && stream->m_adStream.IsOldRepresentationEnded() &&
+        !reader->EOS())
+      return false;
+  }
+  return m_changed.exchange(false);
 }
 
 void CSession::OnStreamChange(adaptive::AdaptiveStream* adStream)
@@ -1503,7 +1511,7 @@ uint64_t CSession::GetChapterStartTime() const
     if (p.get() == m_adaptiveTree->m_currentPeriod)
       break;
     else
-      start_time += (p->GetDuration() * STREAM_TIME_BASE) / p->GetTimescale();
+      start_time += TimeToUs(p->GetDuration(), p->GetTimescale());
   }
   return start_time;
 }

@@ -13,6 +13,8 @@
 #include "common/AdaptiveTree.h"
 #include "decrypters/IDecrypter.h"
 
+#include <atomic>
+
 #include <bento4/Ap4.h>
 #include <kodi/tools/DllHelper.h>
 
@@ -360,7 +362,8 @@ private:
   std::vector<std::unique_ptr<CStream>> m_streams;
   CStream* m_timingStream{nullptr};
 
-  bool m_changed{false};
+  // Set also by the reader threads (OnStreamChange)
+  std::atomic<bool> m_changed{false};
   uint64_t m_elapsedTime{0};
   uint64_t m_chapterStartTime{0}; // In STREAM_TIME_BASE
   double m_chapterSeekTime{0.0}; // In seconds

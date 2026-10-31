@@ -666,7 +666,14 @@ bool AdaptiveStream::start_stream(const uint64_t startPts)
   if(max_buffer_length_<=assured_buffer_length_)//for incorrect settings input
     max_buffer_length_=assured_buffer_length_+4u;
 
-  AllocateSegmentBuffers(max_buffer_length_);
+  {
+    // The worker takes the next segment buffer under mutex_dl_, also at the reopen
+    // of a change of the representation
+    std::unique_lock<std::mutex> lckdl;
+    if (thread_data_)
+      lckdl = std::unique_lock<std::mutex>(thread_data_->mutex_dl_);
+    AllocateSegmentBuffers(max_buffer_length_);
+  }
 
   if (!thread_data_)
   {
@@ -740,7 +747,9 @@ bool AdaptiveStream::start_stream(const uint64_t startPts)
 
       current_rep_->current_segment_ = current_rep_->Timeline().Get(segPos);
     }
-    else if (m_startEvent == EVENT_TYPE::REP_CHANGE) // switching streams, align new stream segment no.
+    // switching streams, align new stream segment no. A seek to the first
+    // segment empties the buffers, then the stream starts at the first segment.
+    else if (m_startEvent == EVENT_TYPE::REP_CHANGE && available_segment_buffers_ > 0)
     {
       uint64_t segmentId = segment_buffers_[0]->segment_number;
       if (segmentId >= current_rep_->GetStartNumber() + current_rep_->Timeline().GetSize())
@@ -1239,18 +1248,17 @@ bool AdaptiveStream::seek_time(double seek_seconds, bool preceeding, bool& needR
 
   std::lock_guard<adaptive::AdaptiveTree::TreeUpdateThread> lckUpdTree(m_tree->GetTreeUpdMutex());
 
-  // The seek time has microseconds. Seconds times the timescale can be a bit
-  // less than a segment start, and the seek then chose the segment before.
+  // The seek time has whole microseconds, on the time line of the PTS offsets.
+  // The segment starts are compared on the same time line: in ticks, a segment
+  // start can be between two microseconds.
   const uint64_t seekUs{static_cast<uint64_t>(std::llround(seek_seconds * STREAM_TIME_BASE))};
-  const uint64_t timescale{current_rep_->GetTimescale()};
-  const uint64_t sec_in_ts{seekUs / STREAM_TIME_BASE * timescale +
-                           seekUs % STREAM_TIME_BASE * timescale / STREAM_TIME_BASE};
+  const auto startUs = [this](size_t pos)
+  { return TimeToUs(current_rep_->Timeline().Get(pos)->startPTS_, current_rep_->GetTimescale()); };
 
   //Skip initialization
   size_t choosen_seg{0};
 
-  while (choosen_seg < current_rep_->Timeline().GetSize() &&
-         sec_in_ts > current_rep_->Timeline().Get(choosen_seg)->startPTS_)
+  while (choosen_seg < current_rep_->Timeline().GetSize() && seekUs > startUs(choosen_seg))
   {
     ++choosen_seg;
   }
@@ -1264,13 +1272,14 @@ bool AdaptiveStream::seek_time(double seek_seconds, bool preceeding, bool& needR
       return false;
     }
 
-    if (sec_in_ts < current_rep_->Timeline().Get(0)->startPTS_ + current_rep_->GetDuration())
+    if (seekUs < TimeToUs(current_rep_->Timeline().Get(0)->startPTS_ + current_rep_->GetDuration(),
+                          current_rep_->GetTimescale()))
       --choosen_seg;
     else
       return false;
   }
 
-  if (choosen_seg && current_rep_->Timeline().Get(choosen_seg)->startPTS_ > sec_in_ts)
+  if (choosen_seg && startUs(choosen_seg) > seekUs)
     --choosen_seg;
 
   // Never seek into expired segments.....
@@ -1279,7 +1288,7 @@ bool AdaptiveStream::seek_time(double seek_seconds, bool preceeding, bool& needR
 
   // The TS reader finds the key frame at or after the seek time, also in the next
   // segments. The other readers seek inside one segment.
-  if (!preceeding && sec_in_ts > current_rep_->Timeline().Get(choosen_seg)->startPTS_ &&
+  if (!preceeding && seekUs > startUs(choosen_seg) &&
       current_adp_->GetStreamType() == StreamType::VIDEO &&
       current_rep_->GetContainerType() != ContainerType::TS)
   {
@@ -1293,7 +1302,9 @@ bool AdaptiveStream::seek_time(double seek_seconds, bool preceeding, bool& needR
   if (newSeg)
   {
     needReset = true;
-    if (newSeg != old_seg)
+    // At a pending change of the representation, the buffers have the data of
+    // the new representation for the reopen, also for the current segment
+    if (newSeg != old_seg || m_startEvent == EVENT_TYPE::REP_CHANGE)
     {
       ResetCurrentSegment(newSeg);
     }

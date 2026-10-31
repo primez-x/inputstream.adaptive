@@ -18,6 +18,7 @@
 #include <cstdio> // sscanf
 
 #include <bento4/Ap4.h>
+#include <kodi/addon-instance/inputstream/TimingConstants.h>
 
 #ifdef INPUTSTREAM_TEST_BUILD
 #include "test/KodiStubs.h"
@@ -71,6 +72,12 @@ bool PLAYLIST::ParseRangeValues(std::string_view range,
     return true;
 
   return false;
+}
+
+uint64_t PLAYLIST::TimeToUs(uint64_t time, uint64_t timescale)
+{
+  // The remainder is less than the 32-bit timescale: the product has no overflow
+  return time / timescale * STREAM_TIME_BASE + time % timescale * STREAM_TIME_BASE / timescale;
 }
 
 AP4_Movie* PLAYLIST::CreateMovieAtom(adaptive::AdaptiveStream& adStream,

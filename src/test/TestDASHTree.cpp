@@ -931,62 +931,141 @@ TEST_F(DASHTreeAdaptiveStreamTest, RepresentationChangeEndsTheOldData)
     int m_changes{0};
   };
 
-  for (const bool seek : {false, true})
+  // A seek before the reopen: into another segment, into the segment of the
+  // new representation at the change, and into the first segment. The reopen
+  // continues in the segment of the seek time, also without a read before the
+  // reopen.
+  enum class Seek
   {
-    SCOPED_TRACE(seek ? "seek before the reopen" : "reopen");
-    delete m_reprChooser;
-    m_reprChooser = new CAlternatingChooser();
-    tree->Uninitialize();
-    delete tree;
-    tree = new DASHTestTree();
-    OpenTestFile("mpd/segtpl_multiple.mpd", "https://foo.bar/dash/multiple.mpd");
-    PLAYLIST::CAdaptationSet* adp{tree->m_periods[0]->GetAdaptationSets()[0].get()};
-    SetTestStream(NewStream(adp));
-    CObserver observer;
-    testStream->set_observer(&observer);
-    ASSERT_TRUE(testStream->start_stream());
-    const PLAYLIST::CRepresentation* first{testStream->getRepresentation()};
-
-    // The segments of the first representation, up to the change. A read
-    // fails also while the download of the next segment has not started.
-    for (int reads = 0; observer.m_changes == 0; ++reads)
+    NONE,
+    OTHER_SEGMENT,
+    CHANGE_SEGMENT,
+    FIRST_SEGMENT,
+  };
+  for (const Seek seek :
+       {Seek::NONE, Seek::OTHER_SEGMENT, Seek::CHANGE_SEGMENT, Seek::FIRST_SEGMENT})
+  {
+    for (const bool readBeforeReopen : {true, false})
     {
-      ASSERT_LT(reads, 50);
-      testStream->read(buf, 16);
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    ASSERT_EQ(observer.m_changes, 1);
-    ASSERT_TRUE(testStream->StreamChanged());
-    ASSERT_NE(testStream->getRepresentation(), first);
+      if (seek == Seek::NONE && !readBeforeReopen)
+        continue;
+      SCOPED_TRACE(testing::Message() << "seek=" << static_cast<int>(seek)
+                                      << " readBeforeReopen=" << readBeforeReopen);
+      // The stream uses the representations of the tree
+      SetTestStream(nullptr);
+      tree->Uninitialize();
+      delete tree;
+      delete m_reprChooser;
+      m_reprChooser = new CAlternatingChooser();
+      tree = new DASHTestTree();
+      OpenTestFile("mpd/segtpl_multiple.mpd", "https://foo.bar/dash/multiple.mpd");
+      PLAYLIST::CAdaptationSet* adp{tree->m_periods[0]->GetAdaptationSets()[0].get()};
+      SetTestStream(NewStream(adp));
+      CObserver observer;
+      testStream->set_observer(&observer);
+      ASSERT_TRUE(testStream->start_stream());
+      const PLAYLIST::CRepresentation* first{testStream->getRepresentation()};
 
-    // No data of the new representation before the reopen
-    for (int read = 0; read < 3; ++read)
-      EXPECT_EQ(testStream->read(buf, 16), 0U);
-    EXPECT_EQ(observer.m_changes, 1);
-
-    if (seek)
-    {
-      // The change is still pending after the seek, and the reopen continues
-      // in the segment of the seek time
-      bool needReset{false};
-      ASSERT_TRUE(testStream->seek_time(10.0, true, needReset));
-      EXPECT_EQ(testStream->read(buf, 16), 0U);
-      EXPECT_TRUE(testStream->StreamChanged());
-    }
-    ASSERT_TRUE(testStream->start_stream());
-    EXPECT_FALSE(testStream->StreamChanged());
-    EXPECT_EQ(testStream->read(buf, 16), 16U);
-    if (seek)
-    {
+      // The segments of the first representation, up to the change. A read
+      // fails also while the download of the next segment has not started.
+      for (int reads = 0; observer.m_changes == 0; ++reads)
+      {
+        ASSERT_LT(reads, 50);
+        testStream->read(buf, 16);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      ASSERT_EQ(observer.m_changes, 1);
+      ASSERT_TRUE(testStream->StreamChanged());
       const PLAYLIST::CRepresentation* rep{testStream->getRepresentation()};
-      const PLAYLIST::CSegment* segment{rep->current_segment_};
-      ASSERT_NE(segment, nullptr);
-      const double start{static_cast<double>(segment->startPTS_) / rep->GetTimescale()};
-      const double end{static_cast<double>(segment->m_endPts) /
-                       rep->GetTimescale()};
-      EXPECT_LE(start, 10.0);
-      EXPECT_GT(end, 10.0);
+      ASSERT_NE(rep, first);
+      const PLAYLIST::CSegment* changeSegment{rep->current_segment_};
+      ASSERT_NE(changeSegment, nullptr);
+      ASSERT_NE(changeSegment, rep->Timeline().Get(0));
+
+      // No data of the new representation before the reopen
+      for (int read = 0; read < 3; ++read)
+        EXPECT_EQ(testStream->read(buf, 16), 0U);
+      EXPECT_EQ(observer.m_changes, 1);
+
+      double seconds{0};
+      if (seek == Seek::OTHER_SEGMENT)
+        seconds = 10.0;
+      else if (seek == Seek::CHANGE_SEGMENT)
+        seconds = static_cast<double>(changeSegment->startPTS_) / rep->GetTimescale() + 0.5;
+      if (seek != Seek::NONE)
+      {
+        // The change is still pending after the seek
+        bool needReset{false};
+        ASSERT_TRUE(testStream->seek_time(seconds, true, needReset));
+        if (readBeforeReopen)
+          EXPECT_EQ(testStream->read(buf, 16), 0U);
+        EXPECT_TRUE(testStream->StreamChanged());
+      }
+      ASSERT_TRUE(testStream->start_stream());
+      EXPECT_FALSE(testStream->StreamChanged());
+      // The initialization segment, then the first media segment
+      EXPECT_EQ(testStream->read(buf, 16), 16U);
+      EXPECT_EQ(testStream->read(buf, 16), 16U);
+      if (seek != Seek::NONE)
+      {
+        const PLAYLIST::CSegment* segment{rep->current_segment_};
+        ASSERT_NE(segment, nullptr);
+        const double start{static_cast<double>(segment->startPTS_) / rep->GetTimescale()};
+        const double end{static_cast<double>(segment->m_endPts) / rep->GetTimescale()};
+        EXPECT_LE(start, seconds);
+        EXPECT_GT(end, seconds);
+      }
+      testStream->Stop();
     }
-    testStream->Stop();
+  }
+}
+
+// The session time line has whole microseconds: the PTS offsets of a stream
+// round the segment starts down to microseconds. A seek to the time of a segment
+// start on that time line chooses the segment, also when the start in ticks is
+// between two microseconds.
+TEST_F(DASHTreeTest, SeekSegmentAtASegmentStartBetweenMicroseconds)
+{
+  // The timescale, and the start of the first segment in ticks
+  for (const auto& [timescale, first] : std::vector<std::pair<uint64_t, uint64_t>>{
+           {90000, 1}, {90000, 153000000000001}, {10000000, 5}})
+  {
+    for (const bool preceeding : {true, false})
+    {
+      SCOPED_TRACE(testing::Message() << "timescale=" << timescale << " first=" << first
+                                      << " preceeding=" << preceeding);
+      CSrvBroker::GetInstance()->Init(m_kodiProps);
+      DASHTestTree dash;
+      dash.Configure(m_reprChooser, {}, "");
+      // Segments of 2 s
+      const std::string mpd{
+          "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" "
+          "mediaPresentationDuration=\"PT8S\"><Period duration=\"PT8S\">"
+          "<AdaptationSet contentType=\"video\" mimeType=\"video/mp4\">"
+          "<Representation id=\"v\" bandwidth=\"1000000\" codecs=\"avc1.4d401f\">"
+          "<SegmentTemplate timescale=\"" +
+          std::to_string(timescale) + "\" presentationTimeOffset=\"" + std::to_string(first) +
+          "\" initialization=\"init.mp4\" media=\"$Time$.m4s\"><SegmentTimeline><S t=\"" +
+          std::to_string(first) + "\" d=\"" + std::to_string(2 * timescale) +
+          "\" r=\"3\"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet>"
+          "</Period></MPD>"};
+      ASSERT_TRUE(dash.Open("http://foo.bar/test.mpd", {}, mpd));
+      dash.PostOpen();
+      PLAYLIST::CAdaptationSet* adp{dash.m_periods[0]->GetAdaptationSets()[0].get()};
+      PLAYLIST::CRepresentation* rep{adp->GetRepresentations()[0].get()};
+      ASSERT_EQ(rep->GetTimescale(), timescale);
+      ASSERT_EQ(rep->Timeline().Get(1)->startPTS_, first + 2 * timescale);
+      TestAdaptiveStream stream{&dash, adp, rep};
+      ASSERT_TRUE(stream.start_stream());
+      // The session passes the elapsed time plus the PTS offset of the stream,
+      // in seconds
+      const uint64_t seekUs{2000000 + stream.GetAbsolutePTSOffset()};
+      bool needReset{false};
+      ASSERT_TRUE(
+          stream.seek_time(static_cast<double>(seekUs) / 1000000, preceeding, needReset));
+      EXPECT_EQ(rep->GetNextSegment(), rep->Timeline().Get(1));
+      stream.Stop();
+      dash.Uninitialize();
+    }
   }
 }

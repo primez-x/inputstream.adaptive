@@ -9,7 +9,11 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix a seek in a TS stream with video and audio that continued at the key frame before the key frame of the seek time
 - Fix a seek to the time of a key frame, which continued at the next key frame: the seek time in milliseconds came with a float error
 - Fix a seek to the start time of some segments, which chose the segment before: a TS seek downloaded and scanned one more segment, and a seek to the frame at or before the seek time continued in the segment before
+- Fix a seek to the start time of some chapters, and to the start time of a segment between two microseconds (for example at a 90 kHz timescale), which continued in the chapter or segment before
 - Fix a change of the stream quality in a TS stream, which lost the last frames of the old quality: two video frames, and the audio frames that waited for a PTS
+- Fix a change of the stream quality that could start before the reader of the old quality returned all frames, while a read of the next frame was still in progress
+- Fix a seek during a change of the stream quality: a seek into the segment of the change read data of the new quality into the reader of the old quality, and a seek to the first segment continued at the segment of the change
+- Fix a possible crash at a change of the stream quality: the reopen of the stream allocated more segment buffers while a download used the buffers
 - Fix a seek to an earlier time inside the current segment, which continued at the start of the segment instead of at the frame of the seek time
 - Fix a seek in a TS stream with video and audio that returned an audio frame first, so the other streams aligned to the audio time instead of the video frame of the seek
 - Fix a seek in an HEVC or MPEG-2 TS stream, which continued at the segment start instead of at the key frame of the seek time
