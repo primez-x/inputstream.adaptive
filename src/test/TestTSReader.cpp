@@ -1739,7 +1739,9 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTh
   constexpr int SPLIT_FRAMES{4};
   // The audio of the next segment comes before or after the video of a frame.
   // With the video first, the rest of the audio PES comes after the next video PES.
-  // A live seek waits for the next segment, also over more reads.
+  // A live seek waits for the next segment, also over more reads. The first
+  // segment holds one or more frames of the audio PES.
+  for (const size_t audioSplit : {size_t{188}, size_t{376}})
   for (const bool live : {false, true})
   for (const int waitReads : {0, 2})
   for (const bool audioFirst : {true, false})
@@ -1747,7 +1749,8 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTh
   {
     if (!live && waitReads)
       continue;
-    SCOPED_TRACE(testing::Message() << (audioFirst ? "audio first" : "video first")
+    SCOPED_TRACE(testing::Message() << audioSplit << " audio bytes, "
+                                    << (audioFirst ? "audio first" : "video first")
                                     << (preceeding ? "" : ", not preceeding")
                                     << (live ? ", live" : "") << ", " << waitReads
                                     << " wait reads");
@@ -1767,12 +1770,12 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTh
                       false);
     const std::vector<uint8_t> audio{writer.Take()};
     first.insert(first.end(), keyFrame.begin(), keyFrame.begin() + 188);
-    first.insert(first.end(), audio.begin(), audio.begin() + 188);
+    first.insert(first.end(), audio.begin(), audio.begin() + audioSplit);
     writer.WriteTables(true);
     std::vector<uint8_t> second{writer.Take()};
     second.insert(second.end(), keyFrame.begin() + 188, keyFrame.end());
     if (audioFirst)
-      second.insert(second.end(), audio.begin() + 188, audio.end());
+      second.insert(second.end(), audio.begin() + audioSplit, audio.end());
     for (int v = SEGMENT_VIDEO_FRAMES; v < 2 * SEGMENT_VIDEO_FRAMES; ++v)
     {
       const int a{2 * v + SPLIT_FRAMES};
@@ -1782,7 +1785,7 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTh
       {
         const std::vector<uint8_t> video{writer.Take()};
         second.insert(second.end(), video.begin(), video.end());
-        second.insert(second.end(), audio.begin() + 188, audio.end());
+        second.insert(second.end(), audio.begin() + audioSplit, audio.end());
       }
       writer.WriteAudio(AudioPts(a) - AUDIO_LEAD, a, 2, 1, false);
       if (audioFirst)

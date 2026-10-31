@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <stdlib.h>
 
 #include <bento4/Ap4ByteStream.h>
@@ -288,11 +289,12 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
       copies.clear();
       // A stream without frames since then, as when a live seek waits again,
       // keeps the frames of its last PES
+      std::set<uint16_t> pidsWithFrames;
+      for (const FrameCopy& last : lastPesFrames)
+        pidsWithFrames.insert(last.pkt.pid);
       for (FrameCopy& frame : previousPesFrames)
       {
-        const uint16_t pid{frame.pkt.pid};
-        if (std::none_of(lastPesFrames.begin(), lastPesFrames.end(),
-                         [pid](const FrameCopy& last) { return last.pkt.pid == pid; }))
+        if (!pidsWithFrames.count(frame.pkt.pid))
           lastPesFrames.push_back(std::move(frame));
       }
       previousPesFrames = std::move(lastPesFrames);
