@@ -14,6 +14,7 @@
 #include "decrypters/IDecrypter.h"
 
 #include <atomic>
+#include <optional>
 
 #include <bento4/Ap4.h>
 #include <kodi/tools/DllHelper.h>
@@ -367,6 +368,13 @@ private:
   uint64_t m_elapsedTime{0};
   uint64_t m_chapterStartTime{0}; // In STREAM_TIME_BASE
   double m_chapterSeekTime{0.0}; // In seconds
+  // A seek at a pending change of the representation, see OnDemuxRead
+  struct ChangeSeek
+  {
+    double m_time; // In seconds
+    bool m_preceeding;
+  };
+  std::optional<ChangeSeek> m_changeSeek;
   uint8_t m_mediaTypeMask{0};
   uint8_t m_drmConfig{0};
 };

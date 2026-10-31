@@ -25,6 +25,7 @@
 #include "utils/Utils.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -1180,6 +1181,10 @@ bool CSession::SeekTime(double seekTime, unsigned int streamId, bool preceeding)
   if (seekTime < 0)
     seekTime = 0;
 
+  // A new seek replaces a seek that waits for the reopen of a stream
+  m_changeSeek.reset();
+  const ChangeSeek changeSeek{seekTime, preceeding};
+
   // Round to the nearest microsecond. A time above the exact value skips a key
   // frame at the seek time.
   uint64_t seekTimeCorrected{static_cast<uint64_t>(std::llround(seekTime * STREAM_TIME_BASE))};
@@ -1248,7 +1253,9 @@ bool CSession::SeekTime(double seekTime, unsigned int streamId, bool preceeding)
       return false;
     }
     timingReader->WaitReadSampleAsyncComplete();
-    if (!timingReader->IsStarted())
+    // At a pending change of the representation, the reader of the old
+    // representation has no data to start
+    if (!timingReader->IsStarted() && !m_timingStream->m_adStream.StreamChanged())
       StartReader(m_timingStream, seekTimeCorrected, ptsDiff, preceeding, true);
 
     seekTimeCorrected += m_timingStream->m_adStream.GetAbsolutePTSOffset();
@@ -1271,7 +1278,7 @@ bool CSession::SeekTime(double seekTime, unsigned int streamId, bool preceeding)
       bool reset{true};
       // all streams must be started before seeking to ensure cross chapter seeks
       // will seek to the correct location/segment
-      if (!streamReader->IsStarted())
+      if (!streamReader->IsStarted() && !stream->m_adStream.StreamChanged())
         StartReader(stream.get(), seekTimeCorrected, ptsDiff, preceeding, false);
 
       streamReader->SetPTSDiff(ptsDiff);
@@ -1280,6 +1287,17 @@ bool CSession::SeekTime(double seekTime, unsigned int streamId, bool preceeding)
                       STREAM_TIME_BASE};
       if (stream->m_adStream.seek_time(seekSecs, preceeding, reset))
       {
+        if (stream->m_adStream.StreamChanged())
+        {
+          // At a pending change of the representation, the reader of the old
+          // representation has no data. The stream continues in the segment of
+          // the seek time after the reopen, and OnDemuxRead seeks again in the
+          // new reader.
+          streamReader->Reset(true);
+          m_changeSeek = changeSeek;
+          ret = true;
+          continue;
+        }
         if (reset)
           streamReader->Reset(false);
         // advance reader to requested time
@@ -1324,6 +1342,16 @@ void CSession::OnDemuxRead()
       SeekTime(GetChapterSeekTime());
       ResetChapterSeekTime();
     }
+  }
+
+  // A seek at a pending change of the representation continues after the reopen
+  // of the changed streams: the new reader starts at the start of the segment
+  if (m_changeSeek &&
+      std::none_of(m_streams.cbegin(), m_streams.cend(), [](const auto& stream)
+                   { return stream->m_isEnabled && stream->m_adStream.StreamChanged(); }))
+  {
+    const ChangeSeek seek{*m_changeSeek};
+    SeekTime(seek.m_time, 0, seek.m_preceeding);
   }
 }
 
@@ -1496,8 +1524,8 @@ int64_t CSession::GetChapterPos(int ch) const
 
   for (; ch; --ch)
   {
-    sum += (m_adaptiveTree->m_periods[ch - 1]->GetDuration() * STREAM_TIME_BASE) /
-           m_adaptiveTree->m_periods[ch - 1]->GetTimescale();
+    sum += TimeToUs(m_adaptiveTree->m_periods[ch - 1]->GetDuration(),
+                    m_adaptiveTree->m_periods[ch - 1]->GetTimescale());
   }
 
   return sum / STREAM_TIME_BASE;

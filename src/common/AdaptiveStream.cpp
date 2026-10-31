@@ -482,7 +482,6 @@ bool AdaptiveStream::parseIndexRange(PLAYLIST::CRepresentation* rep,
       CSegment seg;
 
       rep->SetTimescale(1000);
-      rep->SetScaling();
 
       for (const WebmReader::CUEPOINT& cue : cuepoints)
       {
@@ -550,7 +549,6 @@ bool AdaptiveStream::parseIndexRange(PLAYLIST::CRepresentation* rep,
         }
 
         rep->SetTimescale(sidx->GetTimeScale());
-        rep->SetScaling();
 
         seg.range_end_ = streamPos + boxSize + sidx->GetFirstOffset() - 1;
 
@@ -562,7 +560,8 @@ bool AdaptiveStream::parseIndexRange(PLAYLIST::CRepresentation* rep,
         uint64_t periodEndMs = NO_PTS_VALUE;
         if (current_period_->GetDuration() != 0)
         {
-          const uint64_t periodDurMs = current_period_->GetDuration() * 1000 / current_period_->GetTimescale();
+          const uint64_t periodDurMs =
+              ConvertTime(current_period_->GetDuration(), current_period_->GetTimescale(), 1000);
           periodEndMs = periodStartMs + periodDurMs;
         }
 
@@ -578,8 +577,8 @@ bool AdaptiveStream::parseIndexRange(PLAYLIST::CRepresentation* rep,
           uint64_t segEndMs{0};
           if (rep->GetTimescale() != 0)
           {
-            segStartMs = seg.startPTS_ * 1000 / rep->GetTimescale();
-            segEndMs = seg.m_endPts * 1000 / rep->GetTimescale();
+            segStartMs = ConvertTime(seg.startPTS_, rep->GetTimescale(), 1000);
+            segEndMs = ConvertTime(seg.m_endPts, rep->GetTimescale(), 1000);
           }
 
           // Determine if this segment belongs to the current period
@@ -823,11 +822,9 @@ bool AdaptiveStream::start_stream(const uint64_t startPts)
 
   if (next_segment)
   {
-    currentPTSOffset_ =
-        (next_segment->startPTS_ * current_rep_->timescale_ext_) / current_rep_->timescale_int_;
+    currentPTSOffset_ = TimeToUs(next_segment->startPTS_, current_rep_->GetTimescale());
     absolutePTSOffset_ =
-        (current_rep_->Timeline().Get(0)->startPTS_ * current_rep_->timescale_ext_) /
-        current_rep_->timescale_int_;
+        TimeToUs(current_rep_->Timeline().Get(0)->startPTS_, current_rep_->GetTimescale());
   }
 
   if (state_ == RUNNING)
@@ -936,12 +933,10 @@ bool AdaptiveStream::ensureSegment()
 
     if (nextSegment)
     {
-      currentPTSOffset_ =
-          (nextSegment->startPTS_ * current_rep_->timescale_ext_) / current_rep_->timescale_int_;
+      currentPTSOffset_ = TimeToUs(nextSegment->startPTS_, current_rep_->GetTimescale());
 
       absolutePTSOffset_ =
-          (current_rep_->Timeline().Get(0)->startPTS_ * current_rep_->timescale_ext_) /
-          current_rep_->timescale_int_;
+          TimeToUs(current_rep_->Timeline().Get(0)->startPTS_, current_rep_->GetTimescale());
 
       current_rep_->current_segment_ = nextSegment;
       ResetSegment(nextSegment);
@@ -1170,12 +1165,9 @@ uint64_t AdaptiveStream::getMaxTimeMs()
         current_rep_->Timeline().Get(current_rep_->Timeline().GetSize() - 2)->startPTS_;
   }
 
-  uint64_t timeExt = ((current_rep_->Timeline()
-                           .Get(current_rep_->Timeline().GetSize() - 1)
-                           ->startPTS_ +
-                       duration) *
-                      current_rep_->timescale_ext_) /
-                     current_rep_->timescale_int_;
+  uint64_t timeExt = TimeToUs(
+      current_rep_->Timeline().Get(current_rep_->Timeline().GetSize() - 1)->startPTS_ + duration,
+      current_rep_->GetTimescale());
 
   return (timeExt - absolutePTSOffset_) / 1000;
 }

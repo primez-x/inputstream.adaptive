@@ -369,7 +369,7 @@ protected:
                                    const PLAYLIST::CRepresentation* segRep,
                                    const PLAYLIST::CSegment* segment) const
   {
-    return segment->m_endPts * 1000 / segRep->GetTimescale();
+    return PLAYLIST::ConvertTime(segment->m_endPts, segRep->GetTimescale(), 1000);
   }
 
   /*!

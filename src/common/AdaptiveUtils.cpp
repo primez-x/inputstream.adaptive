@@ -74,10 +74,15 @@ bool PLAYLIST::ParseRangeValues(std::string_view range,
   return false;
 }
 
-uint64_t PLAYLIST::TimeToUs(uint64_t time, uint64_t timescale)
+uint64_t PLAYLIST::ConvertTime(uint64_t time, uint64_t timescale, uint64_t newTimescale)
 {
   // The remainder is less than the 32-bit timescale: the product has no overflow
-  return time / timescale * STREAM_TIME_BASE + time % timescale * STREAM_TIME_BASE / timescale;
+  return time / timescale * newTimescale + time % timescale * newTimescale / timescale;
+}
+
+uint64_t PLAYLIST::TimeToUs(uint64_t time, uint64_t timescale)
+{
+  return ConvertTime(time, timescale, STREAM_TIME_BASE);
 }
 
 AP4_Movie* PLAYLIST::CreateMovieAtom(adaptive::AdaptiveStream& adStream,

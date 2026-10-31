@@ -86,7 +86,7 @@ bool adaptive::CSmoothTree::ParseManifest(const std::string& data)
     available_time_ = stream_start_;
   }
 
-  m_totalTime = period->GetDuration() * 1000 / period->GetTimescale();
+  m_totalTime = ConvertTime(period->GetDuration(), period->GetTimescale(), 1000);
 
   // Parse <Protection> tag
   PRProtectionParser protParser;
@@ -378,8 +378,6 @@ void adaptive::CSmoothTree::ParseTagQualityLevel(pugi::xml_node nodeQI,
 
   repr->assured_buffer_duration_ = m_settings.m_bufferAssuredDuration;
   repr->max_buffer_duration_ = m_settings.m_bufferMaxDuration;
-
-  repr->SetScaling();
 
   adpSet->AddRepresentation(repr);
 }

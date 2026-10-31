@@ -111,12 +111,21 @@ bool ParseRangeValues(std::string_view range,
                       char separator = '@');
 
 /*!
- * \brief Convert a time in a timescale to microseconds (STREAM_TIME_BASE). The
- *        result is rounded down, as the PTS offsets of the streams, and has no
- *        overflow.
+ * \brief Convert a time in a timescale to another timescale. The result is
+ *        rounded down, and has no overflow for timescales of 32 bits.
  * \param time The time in the timescale
  * \param timescale The timescale, not 0
- * \return The time in microseconds
+ * \param newTimescale The timescale of the result
+ * \return The time in the new timescale
+ */
+uint64_t ConvertTime(uint64_t time, uint64_t timescale, uint64_t newTimescale);
+
+/*!
+ * \brief Convert a time in a timescale to microseconds (STREAM_TIME_BASE), the
+ *        time line of the session and of the PTS offsets of the streams.
+ * \param time The time in the timescale
+ * \param timescale The timescale, not 0
+ * \return The time in microseconds, rounded down
  */
 uint64_t TimeToUs(uint64_t time, uint64_t timescale);
 

@@ -243,7 +243,7 @@ bool adaptive::CDashTree::ParseManifest(const std::string& data)
         if (period->GetStart() != NO_VALUE && mpdTotalDuration > 0)
         {
           uint64_t durMs = mpdTotalDuration - period->GetStart();
-          period->SetDuration(durMs * period->GetTimescale() / 1000);
+          period->SetDuration(ConvertTime(durMs, 1000, period->GetTimescale()));
         }
         else // Try get duration / timescale from a representation
         {
@@ -253,8 +253,8 @@ bool adaptive::CDashTree::ParseManifest(const std::string& data)
             auto& rep = adp->GetRepresentations()[0];
             if (rep->GetDuration() > 0)
             {
-              uint64_t durMs = rep->GetDuration() * 1000 / rep->GetTimescale();
-              period->SetDuration(durMs * period->GetTimescale() / 1000);
+              uint64_t durMs = ConvertTime(rep->GetDuration(), rep->GetTimescale(), 1000);
+              period->SetDuration(ConvertTime(durMs, 1000, period->GetTimescale()));
               totalDuration += durMs;
             }
           }
@@ -265,7 +265,7 @@ bool adaptive::CDashTree::ParseManifest(const std::string& data)
         if (period->GetStart() != NO_VALUE && (*nextPeriod)->GetStart() != NO_VALUE)
         {
           uint64_t durMs = (*nextPeriod)->GetStart() - period->GetStart();
-          period->SetDuration(durMs * period->GetTimescale() / 1000);
+          period->SetDuration(ConvertTime(durMs, 1000, period->GetTimescale()));
         }
         else // Try get duration / timescale from a representation
         {
@@ -275,8 +275,8 @@ bool adaptive::CDashTree::ParseManifest(const std::string& data)
             auto& rep = adp->GetRepresentations()[0];
             if (rep->GetDuration() > 0)
             {
-              uint64_t durMs = rep->GetDuration() * 1000 / rep->GetTimescale();
-              period->SetDuration(durMs * period->GetTimescale() / 1000);
+              uint64_t durMs = ConvertTime(rep->GetDuration(), rep->GetTimescale(), 1000);
+              period->SetDuration(ConvertTime(durMs, 1000, period->GetTimescale()));
               totalDuration += durMs;
             }
           }
@@ -372,7 +372,8 @@ void adaptive::CDashTree::ParseTagPeriod(pugi::xml_node nodePeriod, std::string_
         nextStart = static_cast<uint64_t>(XML::ParseDuration(nextStartStr) * 1000);
 
       if (nextStart > 0)
-        period->SetDuration((nextStart - period->GetStart()) * period->GetTimescale() / 1000);
+        period->SetDuration(
+            ConvertTime(nextStart - period->GetStart(), 1000, period->GetTimescale()));
     }
   }
 
@@ -845,6 +846,9 @@ void adaptive::CDashTree::ParseTagRepresentation(pugi::xml_node nodeRepr,
     if (XML::QueryAttrib(nodeSeglist, "timescale", timescale))
       segList.SetTimescale(timescale);
 
+    if (segList.GetTimescale() == 0)
+      segList.SetTimescale(1); // if not specified defaults to seconds
+
     uint64_t pto;
     if (XML::QueryAttrib(nodeSeglist, "presentationTimeOffset", pto))
       segList.SetPresTimeOffset(pto);
@@ -1032,7 +1036,8 @@ void adaptive::CDashTree::ParseTagRepresentation(pugi::xml_node nodeRepr,
       const bool hasMediaNumber = segTemplate->HasMediaNumber();
       const uint32_t segTimescale = segTemplate->GetTimescale();
       const uint64_t periodStartMs = period->GetStart() == NO_VALUE ? 0 : period->GetStart();
-      const uint64_t periodStartScaled = periodStartMs * segTemplate->GetTimescale() / 1000;
+      const uint64_t periodStartScaled =
+          ConvertTime(periodStartMs, 1000, segTemplate->GetTimescale());
 
       //! @todo: PTO a/v sync to be implemented on session/demuxers
       const bool hasPTO = segTemplate->HasPresTimeOffset();
@@ -1077,10 +1082,10 @@ void adaptive::CDashTree::ParseTagRepresentation(pugi::xml_node nodeRepr,
         size_t segmentsCount = 1;
 
         const uint32_t segDuration = segTemplate->GetDuration();
-        const uint64_t segDurMs = static_cast<uint64_t>(segDuration) * 1000 / segTimescale;
+        const uint64_t segDurMs = ConvertTime(segDuration, segTimescale, 1000);
         uint64_t time = periodStartScaled;
 
-        uint64_t periodDurMs = period->GetDuration() * 1000 / period->GetTimescale();
+        uint64_t periodDurMs = ConvertTime(period->GetDuration(), period->GetTimescale(), 1000);
         if (periodDurMs == 0)
           periodDurMs = m_mediaPresDuration;
 
@@ -1143,7 +1148,6 @@ void adaptive::CDashTree::ParseTagRepresentation(pugi::xml_node nodeRepr,
   }
 
   repr->SetDuration(repr->Timeline().GetDuration());
-  repr->SetScaling();
 
   adpSet->AddRepresentation(repr);
 }
@@ -1862,7 +1866,7 @@ uint64_t adaptive::CDashTree::GetSegmentEndMs(const PLAYLIST::CPeriod* segPeriod
   // The times of a SegmentList start at the period start
 
   const uint64_t periodStartMs{segPeriod->GetStart() == NO_VALUE ? 0 : segPeriod->GetStart()};
-  return periodStartMs + endPts * 1000 / segRep->GetTimescale();
+  return periodStartMs + ConvertTime(endPts, segRep->GetTimescale(), 1000);
 }
 
 bool adaptive::CDashTree::InsertLiveFragment(PLAYLIST::CAdaptationSet* adpSet,

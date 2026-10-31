@@ -10,8 +10,6 @@
 
 #include "utils/StringUtils.h"
 
-#include <kodi/addon-instance/inputstream/TimingConstants.h>
-
 using namespace PLAYLIST;
 using namespace UTILS;
 
@@ -86,8 +84,6 @@ void PLAYLIST::CRepresentation::CopyHLSData(const CRepresentation* other)
   m_audioChannels = other->m_audioChannels;
   m_containerType = other->m_containerType;
   m_timescale = other->m_timescale;
-  timescale_ext_ = other->timescale_ext_;
-  timescale_int_ = other->timescale_int_;
 
   m_isIncludedStream = other->m_isIncludedStream;
   m_isEnabled = other->m_isEnabled;
@@ -114,27 +110,4 @@ const uint64_t PLAYLIST::CRepresentation::GetSegNumber(const CSegment* seg) cons
     return SEGMENT_NO_NUMBER;
 
   return static_cast<uint64_t>(segPos) + m_startNumber;
-}
-
-void PLAYLIST::CRepresentation::SetScaling()
-{
-  if (!m_timescale)
-  {
-    timescale_ext_ = timescale_int_ = 1;
-    return;
-  }
-
-  timescale_ext_ = STREAM_TIME_BASE;
-  timescale_int_ = m_timescale;
-
-  while (timescale_ext_ > 1)
-  {
-    if ((timescale_int_ / 10) * 10 == timescale_int_)
-    {
-      timescale_ext_ /= 10;
-      timescale_int_ /= 10;
-    }
-    else
-      break;
-  }
 }

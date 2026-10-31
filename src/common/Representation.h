@@ -200,11 +200,6 @@ public:
    */
   const uint64_t GetSegNumber(const CSegment* seg) const;
 
-  uint32_t timescale_ext_{0};
-  uint32_t timescale_int_{0};
-
-  void SetScaling();
-
   std::chrono::time_point<std::chrono::system_clock> repLastUpdated_;
 
   //! @todo: to be reworked or deleted

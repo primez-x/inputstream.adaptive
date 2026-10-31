@@ -822,7 +822,7 @@ bool adaptive::CHLSTree::ProcessChildManifest(PLAYLIST::CPeriod* period,
         if (adp->GetStreamType() != StreamType::SUBTITLE)
         {
           uint64_t periodDuration =
-              (rep->GetDuration() * period->GetTimescale()) / rep->GetTimescale();
+              ConvertTime(rep->GetDuration(), rep->GetTimescale(), period->GetTimescale());
           period->SetDuration(periodDuration);
         }
 
@@ -940,19 +940,19 @@ bool adaptive::CHLSTree::ProcessChildManifest(PLAYLIST::CPeriod* period,
   {
     if (adp->GetStreamType() != StreamType::SUBTITLE)
     {
-      uint64_t periodDuration =
-          (rep->GetDuration() * m_periods[discontCount]->GetTimescale()) / rep->GetTimescale();
+      uint64_t periodDuration = ConvertTime(rep->GetDuration(), rep->GetTimescale(),
+                                            m_periods[discontCount]->GetTimescale());
       m_periods[discontCount]->SetDuration(periodDuration);
     }
 
     for (auto& p : m_periods)
     {
-      totalTimeMs += p->GetDuration() * 1000 / p->GetTimescale();
+      totalTimeMs += ConvertTime(p->GetDuration(), p->GetTimescale(), 1000);
     }
   }
   else
   {
-    totalTimeMs = rep->GetDuration() * 1000 / rep->GetTimescale();
+    totalTimeMs = ConvertTime(rep->GetDuration(), rep->GetTimescale(), 1000);
   }
 
   if (adp->GetStreamType() != StreamType::SUBTITLE)
@@ -1212,8 +1212,6 @@ bool adaptive::CHLSTree::ParseManifest(const std::string& data)
     repr->assured_buffer_duration_ = m_settings.m_bufferAssuredDuration;
     repr->max_buffer_duration_ = m_settings.m_bufferMaxDuration;
 
-    repr->SetScaling();
-
     newAdpSet->AddRepresentation(repr);
     period->AddAdaptationSet(newAdpSet);
 
@@ -1440,8 +1438,6 @@ bool adaptive::CHLSTree::ParseRenditon(const Rendition& r,
 
   repr->assured_buffer_duration_ = m_settings.m_bufferAssuredDuration;
   repr->max_buffer_duration_ = m_settings.m_bufferMaxDuration;
-
-  repr->SetScaling();
 
   return true;
 }
@@ -1780,7 +1776,6 @@ bool adaptive::CHLSTree::ParseMultivariantPlaylist(const std::string& data)
 
       repr->assured_buffer_duration_ = m_settings.m_bufferAssuredDuration;
       repr->max_buffer_duration_ = m_settings.m_bufferMaxDuration;
-      repr->SetScaling();
 
       std::string uri = var.m_uri;
       if (URL::IsUrlRelative(uri))
@@ -1832,8 +1827,6 @@ void adaptive::CHLSTree::AddIncludedAudioStream(std::unique_ptr<PLAYLIST::CPerio
 
   repr->assured_buffer_duration_ = m_settings.m_bufferAssuredDuration;
   repr->max_buffer_duration_ = m_settings.m_bufferMaxDuration;
-
-  repr->SetScaling();
 
   newAdpSet->AddRepresentation(repr);
 

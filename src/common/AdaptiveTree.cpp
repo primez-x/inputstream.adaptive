@@ -203,7 +203,8 @@ namespace adaptive
 
       if (segPeriod->GetDuration() > 0 && segPeriod->GetStart() != NO_VALUE)
       {
-        const uint64_t pDurMs = segPeriod->GetDuration() * 1000 / segPeriod->GetTimescale();
+        const uint64_t pDurMs =
+            ConvertTime(segPeriod->GetDuration(), segPeriod->GetTimescale(), 1000);
         const uint64_t pEndPtsMs = segPeriod->GetStart() + pDurMs;
 
         const uint64_t segEndPtsMs = GetSegmentEndMs(segPeriod, segRep, segment);

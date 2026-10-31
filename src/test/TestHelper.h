@@ -103,6 +103,7 @@ class DASHTestTree : public adaptive::CDashTree
 {
 public:
   DASHTestTree() : CDashTree() {}
+  using CDashTree::GetSegmentEndMs;
   uint64_t GetTimestamp() override { return m_mockTime; }
   void SetNowTime(uint64_t time) { m_mockTime = time; }
   void SetLastUpdated(const std::chrono::system_clock::time_point tm) { lastUpdated_ = tm; }

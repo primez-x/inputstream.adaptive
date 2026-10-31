@@ -160,8 +160,7 @@ AP4_Result CSubtitleSampleReader::ReadSample()
           AP4_DataBuffer segData(buffer.data(), static_cast<AP4_Size>(buffer.size()));
           uint64_t segDur = currentSegment->m_endPts - currentSegment->startPTS_;
 
-          AP4_UI32 duration =
-              static_cast<AP4_UI32>((segDur * STREAM_TIME_BASE) / rep->GetTimescale());
+          AP4_UI32 duration = static_cast<AP4_UI32>(TimeToUs(segDur, rep->GetTimescale()));
 
           uint64_t startPts = currentSegment->startPTS_;
 
@@ -170,17 +169,18 @@ AP4_Result CSubtitleSampleReader::ReadSample()
           //! that that makes an incorrect comparison of DTSorPTS
           if (CSrvBroker::GetResources().GetTree().GetTreeType() == adaptive::TreeType::HLS)
           {
-            const uint64_t pStart = m_adStream->getPeriod()->GetStart() * rep->GetTimescale() / 1000;
+            const uint64_t pStart =
+                ConvertTime(m_adStream->getPeriod()->GetStart(), 1000, rep->GetTimescale());
             startPts -= pStart;
           }
 
-          AP4_UI64 pts = (startPts * STREAM_TIME_BASE) / rep->GetTimescale();
+          AP4_UI64 pts = TimeToUs(startPts, rep->GetTimescale());
 
           //! @todo: MPD PTO see also todo in the MPD parser
           if (rep->HasSegmentTemplate() && rep->GetSegmentTemplate()->HasPresTimeOffset())
           {
-            uint64_t pto = (rep->GetSegmentTemplate()->GetPresTimeOffset() * STREAM_TIME_BASE) /
-                           rep->GetSegmentTemplate()->GetTimescale();
+            uint64_t pto = TimeToUs(rep->GetSegmentTemplate()->GetPresTimeOffset(),
+                                    rep->GetSegmentTemplate()->GetTimescale());
             if (pts >= pto)
               pts -= pto;
           }

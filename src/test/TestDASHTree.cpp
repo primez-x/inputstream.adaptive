@@ -1028,7 +1028,11 @@ TEST_F(DASHTreeTest, SeekSegmentAtASegmentStartBetweenMicroseconds)
 {
   // The timescale, and the start of the first segment in ticks
   for (const auto& [timescale, first] : std::vector<std::pair<uint64_t, uint64_t>>{
-           {90000, 1}, {90000, 153000000000001}, {10000000, 5}})
+           {90000, 1},
+           {90000, 153000000000001},
+           {10000000, 5},
+           {4294967295, 7200 * uint64_t{4294967295} + 1},
+           {4294967295, 21474836475000}})
   {
     for (const bool preceeding : {true, false})
     {
@@ -1037,7 +1041,7 @@ TEST_F(DASHTreeTest, SeekSegmentAtASegmentStartBetweenMicroseconds)
       CSrvBroker::GetInstance()->Init(m_kodiProps);
       DASHTestTree dash;
       dash.Configure(m_reprChooser, {}, "");
-      // Segments of 2 s
+      // Segments of 1 s: the parser reads a duration with 32 bits
       const std::string mpd{
           "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" "
           "mediaPresentationDuration=\"PT8S\"><Period duration=\"PT8S\">"
@@ -1046,7 +1050,7 @@ TEST_F(DASHTreeTest, SeekSegmentAtASegmentStartBetweenMicroseconds)
           "<SegmentTemplate timescale=\"" +
           std::to_string(timescale) + "\" presentationTimeOffset=\"" + std::to_string(first) +
           "\" initialization=\"init.mp4\" media=\"$Time$.m4s\"><SegmentTimeline><S t=\"" +
-          std::to_string(first) + "\" d=\"" + std::to_string(2 * timescale) +
+          std::to_string(first) + "\" d=\"" + std::to_string(timescale) +
           "\" r=\"3\"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet>"
           "</Period></MPD>"};
       ASSERT_TRUE(dash.Open("http://foo.bar/test.mpd", {}, mpd));
@@ -1054,12 +1058,14 @@ TEST_F(DASHTreeTest, SeekSegmentAtASegmentStartBetweenMicroseconds)
       PLAYLIST::CAdaptationSet* adp{dash.m_periods[0]->GetAdaptationSets()[0].get()};
       PLAYLIST::CRepresentation* rep{adp->GetRepresentations()[0].get()};
       ASSERT_EQ(rep->GetTimescale(), timescale);
-      ASSERT_EQ(rep->Timeline().Get(1)->startPTS_, first + 2 * timescale);
+      ASSERT_EQ(rep->Timeline().Get(1)->startPTS_, first + timescale);
       TestAdaptiveStream stream{&dash, adp, rep};
       ASSERT_TRUE(stream.start_stream());
+      // 4 segments of 1 s
+      EXPECT_EQ(stream.getMaxTimeMs(), 4000U);
       // The session passes the elapsed time plus the PTS offset of the stream,
       // in seconds
-      const uint64_t seekUs{2000000 + stream.GetAbsolutePTSOffset()};
+      const uint64_t seekUs{1000000 + stream.GetAbsolutePTSOffset()};
       bool needReset{false};
       ASSERT_TRUE(
           stream.seek_time(static_cast<double>(seekUs) / 1000000, preceeding, needReset));
@@ -1068,4 +1074,58 @@ TEST_F(DASHTreeTest, SeekSegmentAtASegmentStartBetweenMicroseconds)
       dash.Uninitialize();
     }
   }
+}
+
+// A SegmentList without a timescale has the timescale 1, as the DASH default
+TEST_F(DASHTreeTest, SegmentListWithoutTimescale)
+{
+  CSrvBroker::GetInstance()->Init(m_kodiProps);
+  DASHTestTree dash;
+  dash.Configure(m_reprChooser, {}, "");
+  ASSERT_TRUE(dash.Open(
+      "http://foo.bar/test.mpd", {},
+      "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" "
+      "mediaPresentationDuration=\"PT8S\"><Period duration=\"PT8S\">"
+      "<AdaptationSet contentType=\"video\" mimeType=\"video/mp4\">"
+      "<Representation id=\"v\" bandwidth=\"1000000\" codecs=\"avc1.4d401f\">"
+      "<SegmentList duration=\"2\"><SegmentURL media=\"seg-0.m4s\"/>"
+      "<SegmentURL media=\"seg-1.m4s\"/><SegmentURL media=\"seg-2.m4s\"/>"
+      "<SegmentURL media=\"seg-3.m4s\"/></SegmentList></Representation></AdaptationSet>"
+      "</Period></MPD>"));
+  dash.PostOpen();
+  PLAYLIST::CAdaptationSet* adp{dash.m_periods[0]->GetAdaptationSets()[0].get()};
+  PLAYLIST::CRepresentation* rep{adp->GetRepresentations()[0].get()};
+  ASSERT_EQ(rep->Timeline().GetSize(), 4U);
+  EXPECT_EQ(rep->GetTimescale(), 1U);
+  TestAdaptiveStream stream{&dash, adp, rep};
+  ASSERT_TRUE(stream.start_stream());
+  EXPECT_EQ(stream.getMaxTimeMs(), 8000U);
+  bool needReset{false};
+  ASSERT_TRUE(stream.seek_time(2.0, true, needReset));
+  EXPECT_EQ(rep->GetNextSegment(), rep->Timeline().Get(1));
+  stream.Stop();
+  dash.Uninitialize();
+}
+
+// The end of a segment in milliseconds, also for times in ticks of a high
+// timescale that are more than the maximum value divided by 1000
+TEST_F(DASHTreeTest, SegmentEndMsAtAHighTimescale)
+{
+  CSrvBroker::GetInstance()->Init(m_kodiProps);
+  DASHTestTree dash;
+  dash.Configure(m_reprChooser, {}, "");
+  // 1900000000 s at 10 MHz
+  ASSERT_TRUE(dash.Open(
+      "http://foo.bar/test.mpd", {},
+      "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" "
+      "mediaPresentationDuration=\"PT8S\"><Period duration=\"PT8S\">"
+      "<AdaptationSet contentType=\"video\" mimeType=\"video/mp4\">"
+      "<Representation id=\"v\" bandwidth=\"1000000\" codecs=\"avc1.4d401f\">"
+      "<SegmentTemplate timescale=\"10000000\" media=\"$Time$.m4s\"><SegmentTimeline>"
+      "<S t=\"19000000000000000\" d=\"20000000\" r=\"3\"/></SegmentTimeline>"
+      "</SegmentTemplate></Representation></AdaptationSet></Period></MPD>"));
+  PLAYLIST::CPeriod* period{dash.m_periods[0].get()};
+  PLAYLIST::CRepresentation* rep{period->GetAdaptationSets()[0]->GetRepresentations()[0].get()};
+  EXPECT_EQ(dash.GetSegmentEndMs(period, rep, rep->Timeline().Get(0)), 1900000002000U);
+  dash.Uninitialize();
 }
