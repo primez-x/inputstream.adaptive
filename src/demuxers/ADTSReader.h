@@ -73,7 +73,7 @@ public:
    * \brief Adjust the stream position to advance over padding if neccessary (end of file)
    * \param stream The stream to check
    */
-  void AdjustStreamForPadding(AP4_ByteStream* stream);
+  void AdjustStreamForPadding(AP4_ByteStream* stream, AP4_Position frameEnd);
   ADTSFrameInfo GetFrameInfo(AP4_ByteStream* stream);
   bool parse(AP4_ByteStream *stream);
   bool ParseAac(AP4_ByteStream* stream);

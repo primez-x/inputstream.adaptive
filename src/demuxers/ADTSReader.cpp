@@ -113,15 +113,17 @@ void ID3TAG::SkipID3Data(AP4_ByteStream* stream)
 
 /**********************************************************************************************************************************/
 
-void ADTSFrame::AdjustStreamForPadding(AP4_ByteStream* stream)
+void ADTSFrame::AdjustStreamForPadding(AP4_ByteStream* stream, AP4_Position frameEnd)
 {
-  AP4_Position currentPos;
-  AP4_Position newPos;
-  stream->Tell(currentPos);
-  stream->Seek(currentPos + 16);
-  stream->Tell(newPos);
-  if (newPos - currentPos == 16)
-    stream->Seek(currentPos);
+  // Skip the padding at the segment end. AES-128 segments from a chunked
+  // download keep the PKCS#7 padding of 1 to 16 bytes. With 16 bytes or less
+  // left, the seek fails and the stream stays at the segment end.
+  // Do not call Tell() here, or anywhere after the frame data:
+  // AdaptiveStream::tell() switches to the next segment at the segment end, and
+  // the session then sets the PTS offset of the next segment before this frame
+  // takes its PTS.
+  if (AP4_SUCCEEDED(stream->Seek(frameEnd + 17)))
+    stream->Seek(frameEnd);
 }
 
 ADTSFrame::ADTSFrameInfo ADTSFrame::GetFrameInfo(AP4_ByteStream* stream)
@@ -174,15 +176,16 @@ bool ADTSFrame::ParseAac(AP4_ByteStream* stream)
   m_summedFrameCount += m_frameInfo.m_frameCount;
 
   // rewind stream to beginning of syncframe
-  AP4_Position currentPos;
-  stream->Tell(currentPos);
-  stream->Seek(currentPos - (AP4_ADTS_HEADER_SIZE));
+  AP4_Position framePos;
+  stream->Tell(framePos);
+  framePos -= AP4_ADTS_HEADER_SIZE;
+  stream->Seek(framePos);
 
   m_dataBuffer.SetDataSize(m_frameInfo.m_frameSize);
   if (!AP4_SUCCEEDED(stream->Read(m_dataBuffer.UseData(), m_dataBuffer.GetDataSize())))
     return false;
 
-  AdjustStreamForPadding(stream);
+  AdjustStreamForPadding(stream, framePos + m_dataBuffer.GetDataSize());
   return true;
 }
 
@@ -219,15 +222,16 @@ bool ADTSFrame::ParseAc3(AP4_ByteStream* stream)
   m_summedFrameCount += m_frameInfo.m_frameCount;
 
   // rewind stream to beginning of syncframe
-  AP4_Position currentPos;
-  stream->Tell(currentPos);
-  stream->Seek(currentPos - (AP4_AC3_HEADER_SIZE));
+  AP4_Position framePos;
+  stream->Tell(framePos);
+  framePos -= AP4_AC3_HEADER_SIZE;
+  stream->Seek(framePos);
 
   m_dataBuffer.SetDataSize(m_frameInfo.m_frameSize);
   if (!AP4_SUCCEEDED(stream->Read(m_dataBuffer.UseData(), m_dataBuffer.GetDataSize())))
     return false;
 
-  AdjustStreamForPadding(stream);
+  AdjustStreamForPadding(stream, framePos + m_dataBuffer.GetDataSize());
   return true;
 }
 
@@ -264,9 +268,10 @@ bool ADTSFrame::ParseEc3(AP4_ByteStream* stream)
   m_summedFrameCount += m_frameInfo.m_frameCount;
 
   // rewind stream to beginning of syncframe
-  AP4_Position currentPos;
-  stream->Tell(currentPos);
-  stream->Seek(currentPos - (AP4_EAC3_HEADER_SIZE));
+  AP4_Position framePos;
+  stream->Tell(framePos);
+  framePos -= AP4_EAC3_HEADER_SIZE;
+  stream->Seek(framePos);
 
   m_dataBuffer.SetDataSize(m_frameInfo.m_frameSize);
   if (!AP4_SUCCEEDED(stream->Read(m_dataBuffer.UseData(), m_dataBuffer.GetDataSize())))
@@ -275,8 +280,7 @@ bool ADTSFrame::ParseEc3(AP4_ByteStream* stream)
   // With 7.1 channels a dependent substream (strmtyp 1) follows, and both
   // substreams are one access unit. Peek only inside the segment: a seek past
   // the segment end fails, and AdaptiveStream then has no valid seek back.
-  AP4_Position frameEnd;
-  stream->Tell(frameEnd);
+  const AP4_Position frameEnd{framePos + m_dataBuffer.GetDataSize()};
   AP4_UI08 next[4];
   if (AP4_SUCCEEDED(stream->Seek(frameEnd + sizeof(next))) &&
       AP4_SUCCEEDED(stream->Seek(frameEnd)) &&
@@ -290,7 +294,7 @@ bool ADTSFrame::ParseEc3(AP4_ByteStream* stream)
       return false;
   }
 
-  AdjustStreamForPadding(stream);
+  AdjustStreamForPadding(stream, framePos + m_dataBuffer.GetDataSize());
   return true;
 }
 

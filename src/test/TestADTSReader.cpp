@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -22,6 +23,8 @@
 // the read, seek and tell rules of AdaptiveStream for downloaded segments: a
 // read never spans two segments, a seek stays in the current segment, a failed
 // seek moves only the segment read position, and tell can switch segments.
+// A switch calls the observer with the segment start time, as
+// CSession::OnSegmentChanged sets the PTS offset of the sample reader.
 namespace adaptive
 {
 class AdaptiveStream
@@ -32,7 +35,9 @@ public:
     if (m_segments.size() > 1 && m_segmentReadPos >= m_segments.front().size())
     {
       m_segments.pop_front();
+      m_starts.pop_front();
       m_segmentReadPos = 0;
+      m_onSegmentChanged(m_starts.front());
     }
     return !m_segments.empty() && m_segmentReadPos < m_segments.front().size();
   }
@@ -68,6 +73,8 @@ public:
   }
 
   std::deque<std::vector<uint8_t>> m_segments; // The current segment first
+  std::deque<uint64_t> m_starts; // The start time of each segment
+  std::function<void(uint64_t)> m_onSegmentChanged;
   size_t m_segmentReadPos{0};
   uint64_t m_absolutePosition{0};
   bool m_waitingForSegment{false};
@@ -206,6 +213,8 @@ protected:
     m_reader.reset();
     m_segments = std::make_unique<adaptive::AdaptiveStream>();
     m_segments->m_segments = {data};
+    m_segments->m_starts = {segmentStart};
+    m_segments->m_onSegmentChanged = [this](uint64_t start) { m_reader->SetPTSOffset(start); };
     m_stream = std::make_unique<CAdaptiveByteStream>(m_segments.get());
     m_reader = std::make_unique<CADTSSampleReader>(m_stream.get(), 1);
     m_reader->Reset(false);
@@ -213,7 +222,11 @@ protected:
   }
 
   // The next segment is downloaded
-  void AppendSegment(const std::vector<uint8_t>& data) { m_segments->m_segments.push_back(data); }
+  void AppendSegment(const std::vector<uint8_t>& data, uint64_t segmentStart)
+  {
+    m_segments->m_segments.push_back(data);
+    m_segments->m_starts.push_back(segmentStart);
+  }
 
   // The frame index in the last two bytes of the sample
   int FrameIndex(size_t end) const
@@ -295,7 +308,7 @@ TEST_F(ADTSSampleReaderTest, LiveSeekContinuesInTheNextSegment)
   EXPECT_EQ(m_reader->PTS(), target);
   EXPECT_EQ(m_reader->GetSampleDataSize(), 0u);
 
-  AppendSegment(Segment(AacFrame(), nextStart, FRAMES));
+  AppendSegment(Segment(AacFrame(), nextStart, FRAMES), nextStart * 100 / 9);
   m_segments->m_waitingForSegment = false;
 
   ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
@@ -410,7 +423,7 @@ TEST_F(ADTSSampleReaderTest, Eac3ReadsTheLastFrameOfASegment)
 {
   OpenSegment(Segment(Eac3Frame(3), BASE_PTS), AacTime(0));
   const uint64_t nextStart{BASE_PTS + FRAMES * 1536ULL * 90000 / 48000};
-  AppendSegment(Segment(Eac3Frame(3), nextStart, FRAMES));
+  AppendSegment(Segment(Eac3Frame(3), nextStart, FRAMES), nextStart * 100 / 9);
 
   ASSERT_TRUE(m_reader->TimeSeek(FrameTime(BASE_PTS, FRAMES - 1, 1536, 48000), false));
   EXPECT_EQ(m_reader->PTS(), FrameTime(BASE_PTS, FRAMES - 1, 1536, 48000));
@@ -436,7 +449,7 @@ TEST_F(ADTSSampleReaderTest, Eac3ReadsTheLastAccessUnitOfASegment)
     }
   }
   OpenSegment(segments[0], AacTime(0));
-  AppendSegment(segments[1]);
+  AppendSegment(segments[1], starts[1] * 100 / 9);
 
   ASSERT_TRUE(m_reader->TimeSeek(FrameTime(BASE_PTS, FRAMES - 1, 1536, 48000), false));
   ASSERT_EQ(m_reader->GetSampleDataSize(), 512u);
@@ -472,7 +485,7 @@ TEST_F(ADTSSampleReaderTest, Eac3ReadsThePaddedEndOfASegment)
       }
       segments[0].insert(segments[0].end(), padding, 0);
       OpenSegment(segments[0], AacTime(0));
-      AppendSegment(segments[1]);
+      AppendSegment(segments[1], starts[1] * 100 / 9);
 
       ASSERT_TRUE(m_reader->TimeSeek(FrameTime(BASE_PTS, FRAMES - 1, 1536, 48000), false));
       EXPECT_EQ(m_reader->GetSampleDataSize(), dependent ? 272u : 256u);
@@ -481,6 +494,74 @@ TEST_F(ADTSSampleReaderTest, Eac3ReadsThePaddedEndOfASegment)
       ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
       EXPECT_EQ(m_reader->PTS(), FrameTime(starts[1], 0, 1536, 48000));
       EXPECT_EQ(FrameIndex(), FRAMES);
+    }
+  }
+}
+
+// The session sets the PTS offset of the next segment when the stream switches
+// to that segment. The PTS diff compares the offset with the first sample of
+// that segment, so the diff stays the same across the segment change. Before,
+// the last sample of a segment took the offset of the next segment, and the
+// diff was one frame wrong until the next seek.
+TEST_F(ADTSSampleReaderTest, PtsDiffStaysTheSameAcrossSegments)
+{
+  constexpr int64_t DIFF{5000};
+  const struct
+  {
+    const char* name;
+    std::vector<uint8_t> frame;
+    std::vector<uint8_t> dependent;
+    uint64_t samples;
+    uint64_t rate;
+  } codecs[] = {{"AAC", AacFrame(), {}, 1024, 44100},
+                {"AC-3", Ac3Frame(0x40), {}, 1536, 48000},
+                {"E-AC-3", Eac3Frame(3), {}, 1536, 48000},
+                {"E-AC-3 7.1", Eac3Frame(3), Eac3DependentFrame(), 1536, 48000}};
+  for (const auto& codec : codecs)
+  {
+    for (const size_t padding : {0, 1, 3, 15, 16})
+    for (const bool late : {false, true})
+    {
+      SCOPED_TRACE(testing::Message() << codec.name << ", padding " << padding
+                                      << (late ? ", next segment after a wait" : ""));
+      const uint64_t starts[2]{BASE_PTS,
+                               BASE_PTS + FRAMES * codec.samples * 90000 / codec.rate};
+      std::vector<uint8_t> segments[2];
+      for (int s = 0; s < 2; ++s)
+      {
+        AppendID3Timestamp(segments[s], starts[s]);
+        for (int i = s * FRAMES; i < (s + 1) * FRAMES; ++i)
+        {
+          AppendFrames(segments[s], codec.frame, i, 1);
+          if (!codec.dependent.empty())
+            AppendFrames(segments[s], codec.dependent, i, 1);
+        }
+        segments[s].insert(segments[s].end(), padding, 0);
+      }
+      OpenSegment(segments[0], starts[0] * 100 / 9 - DIFF);
+      if (!late)
+        AppendSegment(segments[1], starts[1] * 100 / 9 - DIFF);
+      m_segments->m_waitingForSegment = late;
+
+      ASSERT_TRUE(
+          m_reader->TimeSeek(FrameTime(BASE_PTS, FRAMES - 3, codec.samples, codec.rate), false));
+      for (int i = FRAMES - 3; i < FRAMES + 3; ++i)
+      {
+        SCOPED_TRACE(i);
+        if (late && i == FRAMES)
+        {
+          // The live stream waits for the next segment
+          ASSERT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
+          ASSERT_FALSE(m_reader->EOS());
+          AppendSegment(segments[1], starts[1] * 100 / 9 - DIFF);
+          m_segments->m_waitingForSegment = false;
+        }
+        if (i > FRAMES - 3)
+          ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+        EXPECT_EQ(FrameIndex(), i);
+        EXPECT_EQ(m_reader->PTS(), FrameTime(BASE_PTS, i, codec.samples, codec.rate));
+        EXPECT_EQ(m_reader->GetPTSDiff(), DIFF);
+      }
     }
   }
 }
