@@ -9,6 +9,8 @@
 #include "SampleReader.h"
 #include "demuxers/ADTSReader.h"
 
+#include <optional>
+
 // forwards
 class CAdaptiveByteStream;
 
@@ -33,19 +35,19 @@ public:
   int64_t GetPTSDiff() const override { return m_ptsDiff; }
   uint32_t GetTimeScale() const override { return 90000; }
   AP4_UI32 GetStreamId() const override { return m_streamId; }
-  AP4_Size GetSampleDataSize() const override { return GetPacketSize(); }
+  // No sample while a seek waits for the segment with the target
+  AP4_Size GetSampleDataSize() const override { return m_seekTime ? 0 : GetPacketSize(); }
   const AP4_Byte* GetSampleData() const override { return GetPacketData(); }
   uint64_t GetDuration() const override { return (ADTSReader::GetDuration() * 100) / 9; }
   bool IsEncrypted() const override { return false; }
 
 private:
-  void UpdatePts();
-
   bool m_eos{false};
   bool m_started{false};
   AP4_UI32 m_streamId;
   uint64_t m_pts{0};
   int64_t m_ptsDiff{0};
   uint64_t m_ptsOffs{~0ULL};
+  std::optional<uint64_t> m_seekTime; // The target of a seek that is not done
   CAdaptiveByteStream* m_adByteStream;
 };

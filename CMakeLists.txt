@@ -83,6 +83,7 @@ if(NOT CMAKE_CROSSCOMPILING AND BUILD_TESTING)
   add_subdirectory(src/test)
   if(ENABLE_INTERNAL_BENTO4)
     add_dependencies(${CMAKE_PROJECT_NAME}_test bento4)
+    add_dependencies(${CMAKE_PROJECT_NAME}_adts_test bento4)
   endif()
 endif()
 

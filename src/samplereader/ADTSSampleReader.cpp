@@ -29,12 +29,33 @@ AP4_Result CADTSSampleReader::Start(bool& bStarted)
 
 AP4_Result CADTSSampleReader::ReadSample()
 {
-  if (ReadPacket())
+  while (ReadPacket())
   {
-    UpdatePts();
+    uint64_t pts{GetPts()};
+    if (pts == ADTSReader::ADTS_PTS_UNSET)
+      m_pts = STREAM_NOPTS_VALUE;
+    else
+      m_pts = (pts * 100) / 9;
+
+    if (~m_ptsOffs)
+    {
+      m_ptsDiff = m_pts - m_ptsOffs;
+      m_ptsOffs = ~0ULL;
+    }
+
+    // A seek skips the samples before the target, also after a wait for a live segment
+    if (m_seekTime && m_pts < *m_seekTime)
+      continue;
+    m_seekTime.reset();
     return AP4_SUCCESS;
   }
-  if (!m_adByteStream || !m_adByteStream->waitingForSegment())
+  if (m_adByteStream && m_adByteStream->waitingForSegment())
+  {
+    // The seek continues in the next segment
+    if (m_seekTime)
+      m_pts = *m_seekTime;
+  }
+  else
   {
     m_eos = true;
   }
@@ -45,37 +66,17 @@ void CADTSSampleReader::Reset(bool bEOS)
 {
   ADTSReader::Reset();
   m_eos = bEOS;
+  m_seekTime.reset();
 }
 
 bool CADTSSampleReader::TimeSeek(uint64_t pts, bool preceeding)
 {
-  // ADTSReader::SeekTime needs a packet already read, and the first packet
-  // of a segment sets the PTS diff
-  if (AP4_FAILED(ReadSample()))
-    return false;
-
-  AP4_UI64 seekPos{(pts * 9) / 100};
-  if (ADTSReader::SeekTime(seekPos, preceeding))
+  m_seekTime = pts;
+  if (AP4_SUCCEEDED(ReadSample()))
   {
     m_started = true;
-    // ADTSReader::SeekTime may have read other packets
-    UpdatePts();
     return true;
   }
-  return false; // EOS
-}
-
-void CADTSSampleReader::UpdatePts()
-{
-  uint64_t pts{GetPts()};
-  if (pts == ADTSReader::ADTS_PTS_UNSET)
-    m_pts = STREAM_NOPTS_VALUE;
-  else
-    m_pts = (pts * 100) / 9;
-
-  if (~m_ptsOffs)
-  {
-    m_ptsDiff = m_pts - m_ptsOffs;
-    m_ptsOffs = ~0ULL;
-  }
+  // Without EOS, the seek waits for a live segment and ReadSample continues the seek
+  return !m_eos;
 }

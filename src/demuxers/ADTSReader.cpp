@@ -415,15 +415,6 @@ bool ADTSReader::GetInformation(kodi::addon::InputstreamInfo& info)
   return isChanged;
 }
 
-// We assume that m_startpos is the current I-Frame position
-bool ADTSReader::SeekTime(uint64_t timeInTs, bool preceeding)
-{
-  while (m_pts < timeInTs)
-    if (!ReadPacket())
-      return false;
-  return true;
-}
-
 bool ADTSReader::ReadPacket()
 {
   ID3TAG::PARSECODE id3Ret;

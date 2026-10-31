@@ -2,20 +2,14 @@ set(BINARY ${CMAKE_PROJECT_NAME}_test)
 
 find_package( Threads )
 
-add_definitions(-DINPUTSTREAM_TEST_BUILD)
-
 add_executable(${BINARY}
     TestMain.cpp
-    TestADTSReader.cpp
     TestDASHTree.cpp
     TestHLSTree.cpp
     TestSmoothTree.cpp
     TestHelper.cpp
     TestUtils.cpp
     ../decrypters/Helpers.cpp
-    ../demuxers/ADTSReader.cpp
-    ../samplereader/ADTSSampleReader.cpp
-    ../parser/CodecParser.cpp
     ../parser/DASHTree.cpp
     ../parser/HLSTree.cpp
     ../parser/SmoothTree.cpp
@@ -40,7 +34,6 @@ add_executable(${BINARY}
     ../common/SegmentBase.cpp
     ../common/SegmentList.cpp
     ../common/SegTemplate.cpp
-    ../AdaptiveByteStream.cpp
     ../oscompat.cpp
     ../SrvBroker.cpp
     ../CompSettings.cpp
@@ -56,11 +49,24 @@ add_executable(${BINARY}
     ../utils/XMLUtils.cpp
     )
 
+target_compile_definitions(${BINARY} PRIVATE INPUTSTREAM_TEST_BUILD)
 target_link_libraries(${BINARY} PRIVATE ${BENTO4_LIBRARIES} ${PUGIXML_LIBRARIES} ${GTEST_LIBRARIES} Threads::Threads ${CMAKE_DL_LIBS})
 
 set(TEST_DATA_DIR "${CMAKE_SOURCE_DIR}/src/test/manifests")
 add_test(NAME manifest_tests COMMAND ${BINARY} "${TEST_DATA_DIR}")
 
-# ADTSReader.h includes the Kodi headers, which conflict with the test stubs
-set_source_files_properties(TestADTSReader.cpp ../samplereader/ADTSSampleReader.cpp
-                            PROPERTIES COMPILE_OPTIONS "-UINPUTSTREAM_TEST_BUILD")
+# The ADTS reader uses the Kodi headers instead of the test stubs, so the ADTS
+# tests build without INPUTSTREAM_TEST_BUILD in a separate executable
+set(ADTS_BINARY ${CMAKE_PROJECT_NAME}_adts_test)
+
+add_executable(${ADTS_BINARY}
+    TestMain.cpp
+    TestADTSReader.cpp
+    ../demuxers/ADTSReader.cpp
+    ../parser/CodecParser.cpp
+    ../samplereader/ADTSSampleReader.cpp
+    )
+
+target_link_libraries(${ADTS_BINARY} PRIVATE ${BENTO4_LIBRARIES} ${GTEST_LIBRARIES} Threads::Threads)
+
+add_test(NAME adts_tests COMMAND ${ADTS_BINARY} "${TEST_DATA_DIR}")
