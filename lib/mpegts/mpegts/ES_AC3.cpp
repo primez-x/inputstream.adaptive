@@ -145,13 +145,12 @@ void ES_AC3::Parse(STREAM_PKT* pkt)
       const int dependent = DependentFrameSize(es_buf + p + size, rest);
       if (dependent > 0 && rest >= dependent)
         size += dependent;
-      // No dependent frame follows. At the end of the data, nothing can follow
-      // too: the end of a segment between the frames looks the same as the
-      // end of the stream.
-      else if (!dependent || (es_end_of_data && !rest))
+      // No dependent frame follows, or the stream ends without the rest of
+      // the dependent frame
+      else if (!dependent || es_end_of_stream)
         break;
       else
-        return; // The rest of the dependent frame or of the header follows
+        return; // The rest of the dependent frame or of the header can follow
     }
     bool streamChange = SetAudioInformation(m_Channels, m_SampleRate, m_BitRate, 0, 0);
     pkt->pid            = pid;

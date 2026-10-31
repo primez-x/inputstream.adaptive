@@ -32,6 +32,7 @@ ElementaryStream::ElementaryStream(uint16_t pes_pid)
   , es_consumed(0)
   , es_parsed(0)
   , es_end_of_data(false)
+  , es_end_of_stream(false)
   , es_skip_to_pts(false)
   , es_continue_decode(false)
   , es_copy_next_position(0)
@@ -342,11 +343,13 @@ bool ElementaryStream::GetStreamPacket(STREAM_PKT* pkt)
   return false;
 }
 
-bool ElementaryStream::GetEndPacket(STREAM_PKT* pkt)
+bool ElementaryStream::GetEndPacket(STREAM_PKT* pkt, bool endOfStream)
 {
   es_end_of_data = true;
+  es_end_of_stream = endOfStream;
   const bool ret = GetStreamPacket(pkt);
   es_end_of_data = false;
+  es_end_of_stream = false;
   return ret;
 }
 

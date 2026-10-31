@@ -452,7 +452,7 @@ bool TSReader::ReadPacket(bool scanStreamInfo)
 
 bool TSReader::ReadEndPacket()
 {
-  return PacketRead(ReadNextEndPacket());
+  return PacketRead(ReadNextEndPacket(true));
 }
 
 bool TSReader::PacketRead(bool read)
@@ -492,7 +492,7 @@ bool TSReader::ReadNextPacket(bool scanStreamInfo)
   while (!ret)
   {
     if (m_stopAtSegmentEnd && IsSegmentEnd(m_AVContext->GetPosition()))
-      return ReadNextEndPacket();
+      return ReadNextEndPacket(false);
 
     int errorCode;
     if ((errorCode = m_AVContext->TSResync()) != TSDemux::AVCONTEXT_CONTINUE)
@@ -629,11 +629,11 @@ void TSReader::ResumeClocks(const std::map<uint16_t, TSDemux::ElementaryStream::
   }
 }
 
-bool TSReader::ReadNextEndPacket()
+bool TSReader::ReadNextEndPacket(bool endOfStream)
 {
   for (auto& tsInfo : m_streamInfos)
   {
-    if (tsInfo.m_enabled && tsInfo.m_stream->GetEndPacket(&m_pkt))
+    if (tsInfo.m_enabled && tsInfo.m_stream->GetEndPacket(&m_pkt, endOfStream))
     {
       if (m_pkt.streamChange)
         HandleStreamChange(m_pkt.pid);

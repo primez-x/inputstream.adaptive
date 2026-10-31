@@ -104,7 +104,7 @@ namespace TSDemux
     STREAM_INFO stream_info;
 
     bool GetStreamPacket(STREAM_PKT* pkt);
-    bool GetEndPacket(STREAM_PKT* pkt); ///< Like GetStreamPacket(), but the buffer ends with the end of the last frame
+    bool GetEndPacket(STREAM_PKT* pkt, bool endOfStream); ///< Like GetStreamPacket(), but the buffer ends with the end of the last frame. Without endOfStream, the next segment can continue the data.
     uint64_t NextFramePosition() const; ///< After GetStreamPacket(), the stream position of the PES where the next frame starts. UINT64_MAX: the next PES with a PTS.
     void ContinueAfterCopy(uint64_t nextFramePosition, bool keyFrame); ///< After the next reset, the data continues after a frame copy that the reader returned
     struct Clock
@@ -142,6 +142,7 @@ namespace TSDemux
     size_t es_consumed;           ///< Consumed payload. Will be erased on next append
     size_t es_parsed;             ///< Parser: Last processed position in buffer
     bool   es_end_of_data;        ///< Parser: In GetEndPacket(), the last frame ends at the end of the buffer
+    bool   es_end_of_stream;      ///< Parser: In GetEndPacket(), no data follows the buffer
     bool   es_skip_to_pts;        ///< Parser: The end of the data completed the last frame. The rest of that frame follows up to the next PES with a PTS.
     bool   es_continue_decode;    ///< Parser: After the next reset, the frames continue a decode
     uint64_t es_copy_next_position; ///< After the next reset, the PES before this position belong to a frame copy. UINT64_MAX: up to the next PES with a PTS.
