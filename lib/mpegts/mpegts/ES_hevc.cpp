@@ -128,7 +128,7 @@ void ES_hevc::Reset()
   // The VPS, SPS and PPS stay valid for the next frames of the stream, as for
   // the decoder, which has them in the extra data. So after a seek, an IRAP
   // picture can use the parameter sets of an earlier picture.
-  m_NeedIRAP = true;
+  m_NeedIRAP = !TakeContinueDecode();
   m_recoveryPoint = false;
   memset(&m_streamData.vcl_nal, 0, sizeof(m_streamData.vcl_nal));
 }

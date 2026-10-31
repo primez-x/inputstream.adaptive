@@ -201,7 +201,7 @@ void ES_h264::Reset()
   // can use the parameter sets of an earlier picture.
   m_SPSRawId = -1;
   m_PPSRawId = -1;
-  m_NeedIFrame = true;
+  m_NeedIFrame = !TakeContinueDecode();
   m_recoveryPoint = false;
   memset(&m_streamData.vcl_nal, 0, sizeof(m_streamData.vcl_nal));
 }

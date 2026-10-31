@@ -130,8 +130,7 @@ void ES_MPEG2Video::Reset()
 {
   ElementaryStream::Reset();
   m_StartCode = 0xffffffff;
-  m_NeedIFrame = true;
-  m_NeedSPS = true;
+  m_NeedIFrame = m_NeedSPS = !TakeContinueDecode();
   m_recoveryPoint = false;
   m_sequenceHeader = false;
 }

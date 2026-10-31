@@ -1448,8 +1448,9 @@ TEST_F(TSSampleReaderTest, PtsDiffOfAPesHeaderAcrossTwoSegments)
 // The last key frame of a segment can continue in the next segment, with a
 // part of the PES header or with a part of the frame data. The stream cannot
 // read the previous segment again, but a seek still lands on that key frame,
-// also when the seek waits for the next live segment. The stream information
-// stays the same, also when the segment ends in a parameter set.
+// also when the seek waits for the next live segment. The P-frames after that
+// key frame follow. The stream information stays the same, also when the
+// segment ends in a parameter set.
 TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
 {
   constexpr int SPLIT_FRAME{SEGMENT_VIDEO_FRAMES - 1};
@@ -1469,7 +1470,8 @@ TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
     writer.WriteTables(true);
     std::vector<uint8_t> second{writer.Take()};
     second.insert(second.end(), split.begin() + 188, split.end());
-    writer.WriteVideo(SEGMENT_VIDEO_FRAMES, SEGMENT_VIDEO_FRAMES, 5);
+    // P-frames follow the key frame, up to the key frame 20
+    writer.WriteVideo(SEGMENT_VIDEO_FRAMES, SEGMENT_VIDEO_FRAMES, 10);
     const std::vector<uint8_t> rest{writer.Take()};
     second.insert(second.end(), rest.begin(), rest.end());
 
@@ -1483,7 +1485,7 @@ TEST_F(TSSampleReaderTest, SeekLandsOnAKeyFrameAcrossTwoSegments)
                                       << (preceeding ? "" : ", not preceeding")
                                       << (live ? ", live" : ""));
       const int landing{preceeding && target < VideoPts(SPLIT_FRAME) ? 10
-                        : !preceeding && target > VideoPts(SPLIT_FRAME) ? SEGMENT_VIDEO_FRAMES
+                        : !preceeding && target > VideoPts(SPLIT_FRAME) ? 20
                                                                          : SPLIT_FRAME};
       // The live seeks read the next segment for the landing frame
       if (live && landing < SPLIT_FRAME)

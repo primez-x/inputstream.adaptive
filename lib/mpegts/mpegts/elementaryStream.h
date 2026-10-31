@@ -11,6 +11,7 @@
 
 #include <inttypes.h>
 #include <cstddef>    // for size_t
+#include <utility>
 #include <vector>
 
 #define ES_INIT_BUFFER_SIZE     64000
@@ -103,6 +104,7 @@ namespace TSDemux
 
     bool GetStreamPacket(STREAM_PKT* pkt);
     bool GetEndPacket(STREAM_PKT* pkt); ///< Like GetStreamPacket(), but the buffer ends with the end of the last frame
+    void ContinueDecode(bool continueDecode) { es_continue_decode = continueDecode; } ///< After the next reset, the frames continue the decode of a key frame that the reader returned
     virtual void Parse(STREAM_PKT* pkt);
 
     struct PesStart
@@ -130,6 +132,8 @@ namespace TSDemux
     size_t es_parsed;             ///< Parser: Last processed position in buffer
     bool   es_end_of_data;        ///< Parser: In GetEndPacket(), the last frame ends at the end of the buffer
     bool   es_skip_to_pts;        ///< Parser: The end of the data completed the last frame. The rest of that frame follows up to the next PES with a PTS.
+    bool   es_continue_decode;    ///< Parser: After the next reset, the frames continue a decode
+    bool TakeContinueDecode() { return std::exchange(es_continue_decode, false); } ///< Parser: In Reset(), the frames continue a decode
     std::vector<PesStart> es_pes_starts; ///< The PES starts in buffer order, the first PES can start before the buffer
     bool   es_pes_start_pending;
     uint64_t es_pes_start_position;

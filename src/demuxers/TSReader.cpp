@@ -367,6 +367,13 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
     }
   }
   m_AVContext->GoPosition(lastRecovery, true);
+  // The parser does not see a copied key frame, so the frames after the copy
+  // continue the decode of that key frame
+  if (seekFrameIsCopy)
+  {
+    if (TSDemux::ElementaryStream* stream{m_AVContext->GetStream(seekFrame->pid)})
+      stream->ContinueDecode(true);
+  }
   m_seekFrame = seekFrame;
 
   return true;
