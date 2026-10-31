@@ -110,6 +110,10 @@ protected:
 
   virtual void OnUpdateSegments() override;
 
+  uint64_t GetSegmentEndMs(const PLAYLIST::CPeriod* segPeriod,
+                           const PLAYLIST::CRepresentation* segRep,
+                           const PLAYLIST::CSegment* segment) const override;
+
   // The lower start number of segments
   uint64_t m_segmentsLowerStartNumber{0};
 

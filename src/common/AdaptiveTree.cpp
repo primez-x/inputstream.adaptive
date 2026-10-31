@@ -206,7 +206,7 @@ namespace adaptive
         const uint64_t pDurMs = segPeriod->GetDuration() * 1000 / segPeriod->GetTimescale();
         const uint64_t pEndPtsMs = segPeriod->GetStart() + pDurMs;
 
-        const uint64_t segEndPtsMs = segment->m_endPts * 1000 / segRep->GetTimescale();
+        const uint64_t segEndPtsMs = GetSegmentEndMs(segPeriod, segRep, segment);
 
         LOG::LogF(LOGDEBUG, "Check for last segment (period end PTS: %llu, segment end PTS: %llu)",
                   pEndPtsMs, segEndPtsMs);

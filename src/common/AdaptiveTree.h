@@ -360,6 +360,19 @@ public:
 
 protected:
   /*!
+   * \brief The end of a segment in ms, on the time line of the period starts.
+   * \param segPeriod The period relative to the segment
+   * \param segRep The representation relative to the segment
+   * \param segment The segment
+   */
+  virtual uint64_t GetSegmentEndMs(const PLAYLIST::CPeriod* segPeriod,
+                                   const PLAYLIST::CRepresentation* segRep,
+                                   const PLAYLIST::CSegment* segment) const
+  {
+    return segment->m_endPts * 1000 / segRep->GetTimescale();
+  }
+
+  /*!
    * \brief Save manifest data to a file for debugging purpose.
    * \param fileNameSuffix Suffix to add to the filename generated.
    * \param data The manifest data to save.

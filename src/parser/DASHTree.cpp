@@ -1839,6 +1839,32 @@ bool adaptive::CDashTree::InsertLiveSegment(PLAYLIST::CPeriod* period,
   return true;
 }
 
+uint64_t adaptive::CDashTree::GetSegmentEndMs(const PLAYLIST::CPeriod* segPeriod,
+                                              const PLAYLIST::CRepresentation* segRep,
+                                              const PLAYLIST::CSegment* segment) const
+{
+  uint64_t endPts{segment->m_endPts};
+  if (segRep->HasSegmentTemplate())
+  {
+    const std::optional<CSegmentTemplate> segTemplate{segRep->GetSegmentTemplate()};
+    // The times of a SegmentTemplate without a SegmentTimeline, or of a SegmentTimeline
+    // without a presentationTimeOffset, include the period start
+    if (!segTemplate->HasTimeline() || !segTemplate->HasPresTimeOffset())
+      return AdaptiveTree::GetSegmentEndMs(segPeriod, segRep, segment);
+    // The times of a SegmentTimeline with a presentationTimeOffset start at the offset
+    endPts -= std::min(endPts, segTemplate->GetPresTimeOffset());
+  }
+  else if (segRep->HasSegmentBase())
+  {
+    // The index times of a SegmentBase count from the start of the file, as the period starts
+    return AdaptiveTree::GetSegmentEndMs(segPeriod, segRep, segment);
+  }
+  // The times of a SegmentList start at the period start
+
+  const uint64_t periodStartMs{segPeriod->GetStart() == NO_VALUE ? 0 : segPeriod->GetStart()};
+  return periodStartMs + endPts * 1000 / segRep->GetTimescale();
+}
+
 bool adaptive::CDashTree::InsertLiveFragment(PLAYLIST::CAdaptationSet* adpSet,
                                              PLAYLIST::CRepresentation* repr,
                                              uint64_t fTimestamp,

@@ -785,52 +785,119 @@ TEST_F(DASHTreeTest, TSBAvailabilityStartTime)
 
 TEST_F(DASHTreeTest, LastSegmentOfEachPeriod)
 {
-  // Two periods of three segments. In a live stream, the last period continues.
-  // An update period of 0 updates the manifest at each segment.
-  for (const bool live : {false, true})
+  // Three periods of 6 s with segments of 2 s, from a SegmentTimeline, a
+  // SegmentList, a SegmentTemplate duration or the index of a SegmentBase. In a
+  // live stream, the last period continues, and an earlier period can still be
+  // in progress (two segments). A presentationTimeOffset moves the SegmentTimeline
+  // times above or below the period start. An update period of 0 updates the
+  // manifest at each segment. Without manifest updates, no segment follows the
+  // timeline.
+  enum class Segments
   {
-    for (const auto [offset, update] : {std::pair{false, "PT2S"}, std::pair{true, "PT2S"},
-                                        std::pair{false, "PT0S"}, std::pair{true, "PT0S"}})
+    TIMELINE,
+    LIST,
+    DURATION,
+    BASE
+  };
+  for (const Segments mode :
+       {Segments::TIMELINE, Segments::LIST, Segments::DURATION, Segments::BASE})
+  {
+    for (const bool live : {false, true})
     {
-      SCOPED_TRACE(testing::Message() << "live=" << live << " presentationTimeOffset=" << offset
-                                      << " minimumUpdatePeriod=" << update);
-      tree->Uninitialize();
-      delete tree;
-      tree = new DASHTestTree();
-      CSrvBroker::GetInstance()->Init(m_kodiProps);
-      tree->Configure(m_reprChooser, {}, "");
-      const std::string start{offset ? "100" : "0"};
-      std::string manifest{"<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"" +
-                           std::string{live ? "dynamic" : "static"} +
-                           "\" minimumUpdatePeriod=\"" + update + "\">"};
-      for (int period = 0; period < 2; ++period)
+      for (const uint64_t offset : {uint64_t{0}, uint64_t{2}, uint64_t{100}})
       {
-        manifest += "<Period id=\"" + std::to_string(period) + "\" start=\"PT" +
-                    std::to_string(period * 6) +
-                    "S\" duration=\"PT6S\"><AdaptationSet mimeType=\"video/mp2t\" "
-                    "contentType=\"video\"><SegmentTemplate timescale=\"1\" "
-                    "media=\"seg-$Number$.ts\"" +
-                    (offset ? " presentationTimeOffset=\"100\"" : "") +
-                    "><SegmentTimeline><S t=\"" + start +
-                    "\" d=\"2\" r=\"2\"/></SegmentTimeline></SegmentTemplate>"
-                    "<Representation id=\"1\" codecs=\"avc1.4d401f\" bandwidth=\"1000000\"/>"
-                    "</AdaptationSet></Period>";
-      }
-      manifest += "</MPD>";
-      ASSERT_TRUE(tree->Open("http://foo.bar/periods.mpd", {}, manifest));
-      ASSERT_EQ(tree->m_periods.size(), 2);
-      for (int period = 0; period < 2; ++period)
-      {
-        tree->m_currentPeriod = tree->m_periods[period].get();
-        auto adp = tree->m_currentPeriod->GetAdaptationSets()[0].get();
-        auto rep = adp->GetRepresentations()[0].get();
-        adaptive::AdaptiveStream stream{tree, adp, rep};
-        ASSERT_EQ(rep->Timeline().GetSize(), 3);
-        for (int segment = 0; segment < 3; ++segment)
+        for (const std::string update : {"PT2S", "PT0S", ""})
         {
-          rep->current_segment_ = rep->Timeline().Get(segment);
-          EXPECT_EQ(stream.IsLastSegment(), segment == 2 && (!live || period == 0))
-              << "period=" << period << " segment=" << segment;
+          for (const int partial : {-1, 0, 1})
+          {
+            // A SegmentTemplate duration fills the period
+            if (mode == Segments::DURATION && partial >= 0)
+              continue;
+            SCOPED_TRACE(testing::Message()
+                         << "segments=" << static_cast<int>(mode) << " live=" << live
+                         << " presentationTimeOffset=" << offset
+                         << " minimumUpdatePeriod=" << update << " partial period=" << partial);
+            tree->Uninitialize();
+            delete tree;
+            tree = new DASHTestTree();
+            CSrvBroker::GetInstance()->Init(m_kodiProps);
+            tree->Configure(m_reprChooser, {}, "");
+            const std::string pto{
+                offset ? " presentationTimeOffset=\"" + std::to_string(offset) + "\"" : ""};
+            std::string manifest{"<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"" +
+                                 std::string{live ? "dynamic" : "static"} + "\"" +
+                                 (update.empty() ? "" : " minimumUpdatePeriod=\"" + update + "\"") +
+                                 ">"};
+            for (int period = 0; period < 3; ++period)
+            {
+              const int segments{period == partial ? 2 : 3};
+              // The segments of a SegmentTemplate are in the adaptation set, the
+              // others in the representation
+              std::string adaptationInfo;
+              std::string representationInfo;
+              if (mode == Segments::TIMELINE)
+                adaptationInfo = "<SegmentTemplate timescale=\"1\" media=\"seg-$Number$.ts\"" +
+                                 pto + "><SegmentTimeline><S t=\"" + std::to_string(offset) +
+                                 "\" d=\"2\" r=\"" + std::to_string(segments - 1) +
+                                 "\"/></SegmentTimeline></SegmentTemplate>";
+              else if (mode == Segments::DURATION)
+                adaptationInfo = "<SegmentTemplate timescale=\"1\" duration=\"2\" "
+                                 "startNumber=\"1\" media=\"seg-$Number$.ts\"" +
+                                 pto + "/>";
+              else if (mode == Segments::LIST)
+              {
+                representationInfo = "<SegmentList timescale=\"1\" duration=\"2\"" + pto + ">";
+                for (int segment = 0; segment < segments; ++segment)
+                  representationInfo +=
+                      "<SegmentURL media=\"seg-" + std::to_string(segment) + ".ts\"/>";
+                representationInfo += "</SegmentList>";
+              }
+              else
+                representationInfo =
+                    "<BaseURL>media.mp4</BaseURL><SegmentBase indexRange=\"0-99\"/>";
+              manifest += "<Period id=\"" + std::to_string(period) + "\" start=\"PT" +
+                          std::to_string(period * 6) +
+                          "S\" duration=\"PT6S\"><AdaptationSet mimeType=\"video/mp4\" "
+                          "contentType=\"video\">" +
+                          adaptationInfo +
+                          "<Representation id=\"1\" codecs=\"avc1.4d401f\" "
+                          "bandwidth=\"1000000\">" +
+                          representationInfo + "</Representation></AdaptationSet></Period>";
+            }
+            manifest += "</MPD>";
+            ASSERT_TRUE(tree->Open("http://foo.bar/periods.mpd", {}, manifest));
+            ASSERT_EQ(tree->m_periods.size(), 3);
+            for (int period = 0; period < 3; ++period)
+            {
+              tree->m_currentPeriod = tree->m_periods[period].get();
+              auto adp = tree->m_currentPeriod->GetAdaptationSets()[0].get();
+              auto rep = adp->GetRepresentations()[0].get();
+              const int segments{period == partial ? 2 : 3};
+              if (mode == Segments::BASE)
+              {
+                // As the index of the media file gives: times from the start of
+                // the file, in the period
+                rep->SetTimescale(1);
+                for (int segment = 0; segment < segments; ++segment)
+                {
+                  PLAYLIST::CSegment seg;
+                  seg.startPTS_ = period * 6 + segment * 2;
+                  seg.m_endPts = seg.startPTS_ + 2;
+                  rep->Timeline().Add(seg);
+                }
+              }
+              adaptive::AdaptiveStream stream{tree, adp, rep};
+              ASSERT_EQ(rep->Timeline().GetSize(), segments);
+              // A live period ends with the segment at the period end
+              const bool complete{!live || update.empty() || (period < 2 && period != partial)};
+              for (int segment = 0; segment < segments; ++segment)
+              {
+                rep->current_segment_ = rep->Timeline().Get(segment);
+                EXPECT_EQ(stream.IsLastSegment(), complete && segment == segments - 1)
+                    << "period=" << period << " segment=" << segment;
+              }
+            }
+          }
         }
       }
     }
