@@ -136,6 +136,11 @@ enum class EVENT_TYPE
     void FixateInitialization(bool on);
     void SetSegmentFileOffset(uint64_t offset) { m_segmentFileOffset = offset; };
     bool StreamChanged() { return m_startEvent == EVENT_TYPE::REP_CHANGE; }
+    /*!
+     * \brief True from the end of the data of the old representation at a
+     *        change of the representation, until the reopen or a seek
+     */
+    bool IsOldRepresentationEnded() const { return m_oldRepresentationEnded; }
 
     void OnTFRFatom(uint64_t ts, uint64_t duration, uint32_t mediaTimescale) override;
 
@@ -307,6 +312,8 @@ enum class EVENT_TYPE
 
     // Defines the event to start the stream, the status will be resetted by start stream method.
     EVENT_TYPE m_startEvent{EVENT_TYPE::STREAM_START};
+    // The reader of the old representation reads no data of the new one
+    bool m_oldRepresentationEnded{false};
 
     // Class ID for debug log purpose, allow the LOG prints of each AdaptiveStream to be distinguished
     uint32_t clsId;

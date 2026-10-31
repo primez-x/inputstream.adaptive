@@ -758,6 +758,7 @@ bool AdaptiveStream::start_stream(const uint64_t startPts)
 
   // Reset the event for the next one
   m_startEvent = EVENT_TYPE::NONE;
+  m_oldRepresentationEnded = false;
 
   const CSegment* next_segment = current_rep_->GetNextSegment();
 
@@ -831,7 +832,7 @@ bool AdaptiveStream::start_stream(const uint64_t startPts)
 bool AdaptiveStream::ensureSegment()
 {
   // NOTE: Some demuxers may call ensureSegment more times to try make more attempts when it return false.
-  if (state_ != RUNNING)
+  if (state_ != RUNNING || m_oldRepresentationEnded)
     return false;
 
   // Switch to the next segment, if the current (so segment_buffers_[0]) segment has been read fully by the demuxer.
@@ -1024,6 +1025,9 @@ bool AdaptiveStream::ensureSegment()
 
       if (m_startEvent == EVENT_TYPE::REP_CHANGE)
       {
+        // The data of the old representation ended. The reader returns the
+        // frames that it keeps before the session reopens the stream.
+        m_oldRepresentationEnded = true;
         if (observer_)
           observer_->OnStreamChange(this);
         return false;
@@ -1227,6 +1231,9 @@ bool AdaptiveStream::seek_time(double seek_seconds, bool preceeding, bool& needR
   if (!current_rep_)
     return false;
 
+  // A seek discards the frames of the old representation
+  m_oldRepresentationEnded = false;
+
   if (current_rep_->IsSubtitleFileStream())
     return true;
 
@@ -1353,6 +1360,9 @@ bool AdaptiveStream::CanAddLiveSegment() const
 
 bool AdaptiveStream::waitingForSegment() const
 {
+  // The data of the old representation ended, the reader waits for no segment
+  if (m_oldRepresentationEnded)
+    return false;
   if ((m_tree->HasManifestUpdates() || m_tree->HasManifestUpdatesSegs()) && state_ == RUNNING)
   {
     std::lock_guard<adaptive::AdaptiveTree::TreeUpdateThread> lckUpdTree(m_tree->GetTreeUpdMutex());

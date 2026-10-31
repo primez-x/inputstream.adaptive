@@ -1342,6 +1342,20 @@ void CSession::OnSegmentChanged(adaptive::AdaptiveStream* adStream)
   }
 }
 
+bool CSession::CheckChange()
+{
+  for (const auto& stream : m_streams)
+  {
+    ISampleReader* reader{stream->GetReader()};
+    if (stream->m_isEnabled && stream->m_adStream.IsOldRepresentationEnded() && reader &&
+        (reader->IsReadSampleAsyncWorking() || !reader->EOS()))
+      return false;
+  }
+  const bool changed{m_changed};
+  m_changed = false;
+  return changed;
+}
+
 void CSession::OnStreamChange(adaptive::AdaptiveStream* adStream)
 {
   for (auto& stream : m_streams)

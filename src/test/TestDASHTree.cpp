@@ -903,3 +903,90 @@ TEST_F(DASHTreeTest, LastSegmentOfEachPeriod)
     }
   }
 }
+
+// A change of the representation ends the data of the old representation: the
+// reader of the old representation returns the frames that it keeps, and the
+// stream continues with the new representation after the reopen (start_stream).
+// A read before the reopen read the data of the new representation into the
+// reader of the old representation.
+TEST_F(DASHTreeAdaptiveStreamTest, RepresentationChangeEndsTheOldData)
+{
+  class CAlternatingChooser : public CTestRepresentationChooserDefault
+  {
+  public:
+    PLAYLIST::CRepresentation* GetNextRepresentation(PLAYLIST::CAdaptationSet* adp,
+                                                     PLAYLIST::CRepresentation* currentRep) override
+    {
+      const auto& reps{adp->GetRepresentations()};
+      if (!currentRep)
+        return reps[0].get();
+      return reps[0].get() == currentRep ? reps[1].get() : reps[0].get();
+    }
+  };
+  class CObserver : public adaptive::AdaptiveStreamObserver
+  {
+  public:
+    void OnSegmentChanged(adaptive::AdaptiveStream* stream) override {}
+    void OnStreamChange(adaptive::AdaptiveStream* stream) override { ++m_changes; }
+    int m_changes{0};
+  };
+
+  for (const bool seek : {false, true})
+  {
+    SCOPED_TRACE(seek ? "seek before the reopen" : "reopen");
+    delete m_reprChooser;
+    m_reprChooser = new CAlternatingChooser();
+    tree->Uninitialize();
+    delete tree;
+    tree = new DASHTestTree();
+    OpenTestFile("mpd/segtpl_multiple.mpd", "https://foo.bar/dash/multiple.mpd");
+    PLAYLIST::CAdaptationSet* adp{tree->m_periods[0]->GetAdaptationSets()[0].get()};
+    SetTestStream(NewStream(adp));
+    CObserver observer;
+    testStream->set_observer(&observer);
+    ASSERT_TRUE(testStream->start_stream());
+    const PLAYLIST::CRepresentation* first{testStream->getRepresentation()};
+
+    // The segments of the first representation, up to the change. A read
+    // fails also while the download of the next segment has not started.
+    for (int reads = 0; observer.m_changes == 0; ++reads)
+    {
+      ASSERT_LT(reads, 50);
+      testStream->read(buf, 16);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_EQ(observer.m_changes, 1);
+    ASSERT_TRUE(testStream->StreamChanged());
+    ASSERT_NE(testStream->getRepresentation(), first);
+
+    // No data of the new representation before the reopen
+    for (int read = 0; read < 3; ++read)
+      EXPECT_EQ(testStream->read(buf, 16), 0U);
+    EXPECT_EQ(observer.m_changes, 1);
+
+    if (seek)
+    {
+      // The change is still pending after the seek, and the reopen continues
+      // in the segment of the seek time
+      bool needReset{false};
+      ASSERT_TRUE(testStream->seek_time(10.0, true, needReset));
+      EXPECT_EQ(testStream->read(buf, 16), 0U);
+      EXPECT_TRUE(testStream->StreamChanged());
+    }
+    ASSERT_TRUE(testStream->start_stream());
+    EXPECT_FALSE(testStream->StreamChanged());
+    EXPECT_EQ(testStream->read(buf, 16), 16U);
+    if (seek)
+    {
+      const PLAYLIST::CRepresentation* rep{testStream->getRepresentation()};
+      const PLAYLIST::CSegment* segment{rep->current_segment_};
+      ASSERT_NE(segment, nullptr);
+      const double start{static_cast<double>(segment->startPTS_) / rep->GetTimescale()};
+      const double end{static_cast<double>(segment->m_endPts) /
+                       rep->GetTimescale()};
+      EXPECT_LE(start, 10.0);
+      EXPECT_GT(end, 10.0);
+    }
+    testStream->Stop();
+  }
+}

@@ -345,20 +345,23 @@ DEMUX_PACKET* CInputStreamAdaptive::DemuxRead(void)
   }
 
   ISampleReader* sr{nullptr};
+  // At a change of the representation, the reader of the old representation can
+  // end before the change: the change also comes without a next sample
+  const bool hasSample{m_session->GetNextSample(sr)};
 
-  if (m_session->GetNextSample(sr))
+  if (m_session->CheckChange())
+  {
+    // Adaptive stream has switched stream (representation) quality
+    m_lastPts = PLAYLIST::NO_PTS_VALUE;
+    DEMUX_PACKET* p{AllocateDemuxPacket(0)};
+    p->iStreamId = DEMUX_SPECIALID_STREAMCHANGE;
+    LOG::Log(LOGDEBUG, "DEMUX_SPECIALID_STREAMCHANGE (stream quality changed)");
+    return p;
+  }
+
+  if (hasSample)
   {
     DEMUX_PACKET* p{nullptr};
-
-    if (m_session->CheckChange())
-    {
-      // Adaptive stream has switched stream (representation) quality
-      m_lastPts = PLAYLIST::NO_PTS_VALUE;
-      p = AllocateDemuxPacket(0);
-      p->iStreamId = DEMUX_SPECIALID_STREAMCHANGE;
-      LOG::Log(LOGDEBUG, "DEMUX_SPECIALID_STREAMCHANGE (stream quality changed)");
-      return p;
-    }
 
     if (sr)
     {

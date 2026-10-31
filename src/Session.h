@@ -190,16 +190,12 @@ public:
   void StartReader(
       CStream* stream, uint64_t seekTime, int64_t ptsDiff, bool preceeding, bool timing);
 
-  /*! \brief Check if the stream has changed, reset changed status
-   *  \param bSet True to keep m_changed value true
+  /*! \brief Check if the stream has changed, reset changed status. At a change
+   *         of the representation, the change waits until the reader of the old
+   *         representation returned all frames.
    *  \return True if stream has changed
    */
-  bool CheckChange(bool bSet = false)
-  {
-    bool ret = m_changed;
-    m_changed = bSet;
-    return ret;
-  };
+  bool CheckChange();
 
   /*! \brief To inform of Kodi's current screen resolution
    *  \param width The width in pixels
