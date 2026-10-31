@@ -112,6 +112,9 @@ namespace TSDemux
       size_t offset;              ///< Position in buffer where the PES data starts
       uint64_t position;          ///< Stream position of the PES
       uint32_t segment;           ///< Media segment of the PES
+      bool timestamped;           ///< The PES has a PTS
+      int64_t pts;                ///< The PTS of the PES data: of the PES, or of the last PES with a PTS before
+      int64_t dts;                ///< The DTS of the PES data
     };
     void StartPes(uint64_t position, uint32_t segment); ///< The next appended data starts a PES
     const PesStart* GetPesStart(const unsigned char* data) const; ///< The PES where packet data starts
@@ -128,7 +131,6 @@ namespace TSDemux
     size_t es_alloc;              ///< Allocated size of memory for buffer
     size_t es_len;                ///< Size of data in buffer
     size_t es_consumed;           ///< Consumed payload. Will be erased on next append
-    size_t es_pts_pointer;        ///< Position in buffer where current PTS becomes applicable
     size_t es_parsed;             ///< Parser: Last processed position in buffer
     bool   es_end_of_data;        ///< Parser: In GetEndPacket(), the last frame ends at the end of the buffer
     bool   es_skip_to_pts;        ///< Parser: The end of the data completed the last frame. The rest of that frame follows up to the next PES with a PTS.
@@ -139,9 +141,16 @@ namespace TSDemux
     uint64_t es_pes_start_position;
     uint32_t es_pes_start_segment;
     void ShiftPesStarts(size_t consumed);
-    void EndLastFrame(size_t frameStart); ///< Parser: In GetEndPacket(), the end of the found frame
+    const PesStart* StartPicture(size_t offset); ///< Parser: The first picture of the found frame starts at offset. Returns the PES of the frame.
+    uint64_t FrameDuration(int64_t dts, uint64_t fallback); ///< Parser: The duration of the frame with the DTS that ends at es_consumed
+    int64_t AudioFramePts(size_t offset, int64_t duration); ///< Parser: The PTS of the audio frame that starts at offset
+    void EndLastFrame(); ///< Parser: In GetEndPacket(), the end of the found frame
     bool AppendExtraData(const uint8_t* nal, size_t size); ///< Appends a NAL unit with a 4 byte start code
     bool   es_found_frame;        ///< Parser: Found frame
+    size_t es_picture_start;      ///< Parser: The first picture of the found frame, relative to es_consumed
+    uint64_t es_frame_duration;   ///< Parser: The last duration from the DTS of two frames
+    uint64_t es_pts_position;     ///< Parser: The stream position of the PES of the last audio frame PTS
+    int64_t es_next_pts;          ///< Parser: The PTS of the next audio frame
     bool   es_frame_valid;
     bool   es_extraDataChanged;
   };

@@ -123,9 +123,7 @@ int ES_MPEG2Audio::FindHeaders(uint8_t *buf, int buf_size)
       m_FrameSize = 144 * m_BitRate / m_SampleRate + padding;
 
     es_found_frame = true;
-    m_DTS = c_pts;
-    m_PTS = c_pts;
-    c_pts += 90000 * 1152 / m_SampleRate;
+    m_DTS = m_PTS = AudioFramePts(buf - es_buf, 90000 * 1152 / m_SampleRate);
     return -1;
   }
   return 0;

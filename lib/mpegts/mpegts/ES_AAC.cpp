@@ -100,9 +100,7 @@ int ES_AAC::FindHeaders(uint8_t *buf, int buf_size)
         return 0;
 
       es_found_frame = true;
-      m_DTS = c_pts;
-      m_PTS = c_pts;
-      c_pts += 90000 * 1024 / (!m_SampleRate ? aac_sample_rates[4] : m_SampleRate);
+      m_DTS = m_PTS = AudioFramePts(buf_ptr - es_buf, 90000 * 1024 / (!m_SampleRate ? aac_sample_rates[4] : m_SampleRate));
       return -1;
     }
   }
@@ -152,9 +150,7 @@ int ES_AAC::FindHeaders(uint8_t *buf, int buf_size)
       m_SampleRate    = aac_sample_rates[SampleRateIndex & 0x0F];
 
       es_found_frame = true;
-      m_DTS = c_pts;
-      m_PTS = c_pts;
-      c_pts += 90000 * 1024 / (!m_SampleRate ? aac_sample_rates[4] : m_SampleRate);
+      m_DTS = m_PTS = AudioFramePts(buf_ptr - es_buf, 90000 * 1024 / (!m_SampleRate ? aac_sample_rates[4] : m_SampleRate));
       return -1;
     }
   }

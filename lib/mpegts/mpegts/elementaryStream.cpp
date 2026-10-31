@@ -30,7 +30,6 @@ ElementaryStream::ElementaryStream(uint16_t pes_pid)
   , es_alloc(0)
   , es_len(0)
   , es_consumed(0)
-  , es_pts_pointer(0)
   , es_parsed(0)
   , es_end_of_data(false)
   , es_skip_to_pts(false)
@@ -39,6 +38,10 @@ ElementaryStream::ElementaryStream(uint16_t pes_pid)
   , es_pes_start_position(0)
   , es_pes_start_segment(0)
   , es_found_frame(false)
+  , es_picture_start(0)
+  , es_frame_duration(0)
+  , es_pts_position(UINT64_MAX)
+  , es_next_pts(PTS_UNSET)
   , es_frame_valid(false)
   , es_extraDataChanged(false)
 {
@@ -61,12 +64,14 @@ void ElementaryStream::Reset(void)
   es_found_frame = false;
   es_frame_valid = false;
   es_skip_to_pts = false;
+  es_pts_position = UINT64_MAX;
+  es_next_pts = PTS_UNSET;
 }
 
 void ElementaryStream::ClearBuffer()
 {
   ShiftPesStarts(es_len);
-  es_len = es_consumed = es_pts_pointer = es_parsed = 0;
+  es_len = es_consumed = es_parsed = 0;
 }
 
 void ElementaryStream::StartPes(uint64_t position, uint32_t segment)
@@ -90,18 +95,55 @@ const ElementaryStream::PesStart* ElementaryStream::GetPesStart(const unsigned c
   return NULL;
 }
 
-void ElementaryStream::EndLastFrame(size_t frameStart)
+const ElementaryStream::PesStart* ElementaryStream::StartPicture(size_t offset)
+{
+  es_picture_start = offset - es_consumed;
+  return GetPesStart(es_buf + offset);
+}
+
+uint64_t ElementaryStream::FrameDuration(int64_t dts, uint64_t fallback)
+{
+  // The next frame starts at es_consumed. Without the DTS of the next frame,
+  // as for the last frame of the data, the frame takes the last duration.
+  const PesStart* next = GetPesStart(es_buf + es_consumed);
+  if (next && next->dts != PTS_UNSET && dts != PTS_UNSET && next->dts > dts)
+    es_frame_duration = next->dts - dts;
+  return es_frame_duration ? es_frame_duration : fallback;
+}
+
+int64_t ElementaryStream::AudioFramePts(size_t offset, int64_t duration)
+{
+  // The PTS of a PES belongs to the first frame that starts in the PES. Each
+  // later frame follows the frame before.
+  const PesStart* pes = GetPesStart(es_buf + offset);
+  if (pes && pes->timestamped && pes->position != es_pts_position)
+  {
+    es_pts_position = pes->position;
+    es_next_pts = pes->pts;
+  }
+  const int64_t pts = es_next_pts;
+  if (es_next_pts != PTS_UNSET)
+    es_next_pts += duration;
+  return pts;
+}
+
+void ElementaryStream::EndLastFrame()
 {
   // The PTS of a PES belongs to the first frame that starts in the PES, and
-  // HLS puts each video frame in its own PES. So a later PES with a PTS starts
-  // the next frame, and the next data continues that frame.
-  if (es_pts_pointer > frameStart)
-    es_consumed = es_pts_pointer;
-  else
+  // the picture of a frame starts in one PES. So a later PES with a PTS starts
+  // the next frame, and the next data continues that frame. A PES with a PTS
+  // before the picture, as with the parameter sets, belongs to the frame.
+  const size_t picture = es_consumed + es_picture_start;
+  for (const PesStart& pes : es_pes_starts)
   {
-    es_consumed = es_len;
-    es_skip_to_pts = true;
+    if (pes.timestamped && pes.offset > picture)
+    {
+      es_consumed = pes.offset;
+      return;
+    }
   }
+  es_consumed = es_len;
+  es_skip_to_pts = true;
 }
 
 bool ElementaryStream::AppendExtraData(const uint8_t* nal, size_t size)
@@ -144,10 +186,6 @@ int ElementaryStream::Append(const unsigned char* buf, size_t len, bool new_pts)
     es_skip_to_pts = false;
   }
 
-  // Mark position where current pts become applicable
-  if (new_pts)
-    es_pts_pointer = es_len;
-
   if (es_buf && es_consumed)
   {
     if (es_consumed < es_len)
@@ -155,10 +193,6 @@ int ElementaryStream::Append(const unsigned char* buf, size_t len, bool new_pts)
       memmove(es_buf, es_buf + es_consumed, es_len - es_consumed);
       es_len -= es_consumed;
       es_parsed -= es_consumed;
-      if (es_pts_pointer > es_consumed)
-        es_pts_pointer -= es_consumed;
-      else
-        es_pts_pointer = 0;
       ShiftPesStarts(es_consumed);
 
       es_consumed = 0;
@@ -197,10 +231,12 @@ int ElementaryStream::Append(const unsigned char* buf, size_t len, bool new_pts)
   if (es_pes_start_pending)
   {
     es_pes_start_pending = false;
+    // The data of a PES without a PTS has the timestamps of the PES before
+    PesStart start{es_len, es_pes_start_position, es_pes_start_segment, new_pts, c_pts, c_dts};
     if (!es_pes_starts.empty() && es_pes_starts.back().offset == es_len)
-      es_pes_starts.back() = {es_len, es_pes_start_position, es_pes_start_segment};
+      es_pes_starts.back() = start;
     else
-      es_pes_starts.push_back({es_len, es_pes_start_position, es_pes_start_segment});
+      es_pes_starts.push_back(start);
   }
 
   memcpy(es_buf + es_len, buf, len);

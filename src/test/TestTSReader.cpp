@@ -176,6 +176,27 @@ std::vector<uint8_t> KeyFrameUnits(const VideoCodec& codec, bool parameterSets)
   return result;
 }
 
+// The start of the first picture unit of an access unit: a slice NAL unit or
+// an MPEG-2 picture
+size_t PictureStart(const VideoCodec& codec, const std::vector<uint8_t>& au)
+{
+  for (size_t i = 0; i + 3 < au.size(); ++i)
+  {
+    if (au[i] != 0 || au[i + 1] != 0 || au[i + 2] != 1)
+      continue;
+    bool picture;
+    if (codec.streamType == H264.streamType)
+      picture = (au[i + 3] & 0x1F) >= 1 && (au[i + 3] & 0x1F) <= 5;
+    else if (codec.streamType == HEVC.streamType)
+      picture = ((au[i + 3] >> 1) & 0x3F) <= 31;
+    else
+      picture = au[i + 3] == 0;
+    if (picture)
+      return i > 0 && au[i - 1] == 0 ? i - 1 : i;
+  }
+  return au.size();
+}
+
 // The stream information of a parser
 struct ParsedInfo
 {
@@ -206,9 +227,8 @@ ParsedInfo ParseAccessUnits(const VideoCodec& codec,
   TSDemux::STREAM_PKT pkt;
   for (size_t n = 0; n < accessUnits.size(); ++n)
   {
-    stream->p_pts = stream->c_pts;
-    stream->p_dts = stream->c_dts;
     stream->c_pts = stream->c_dts = 90000 + 3000 * n;
+    stream->StartPes(n, 0);
     const std::vector<uint8_t>& au{accessUnits[n]};
     std::vector<size_t> ends;
     for (size_t end = chunk; end < au.size(); end += chunk)
@@ -286,6 +306,29 @@ public:
     }
   }
 
+  // Audio frames in PES packets of pesSize bytes, which can end inside a frame
+  // or a frame header. A PES has the PTS of the first frame that starts in it.
+  void WriteAudioInPesOfSize(int count, size_t pesSize)
+  {
+    std::vector<uint8_t> payload;
+    std::vector<size_t> frameStarts;
+    for (int i = 0; i < count; ++i)
+    {
+      frameStarts.push_back(payload.size());
+      const std::vector<uint8_t> aac{AacFrame(i)};
+      payload.insert(payload.end(), aac.begin(), aac.end());
+    }
+    for (size_t start = 0; start < payload.size(); start += pesSize)
+    {
+      const size_t end{std::min(start + pesSize, payload.size())};
+      const auto frame{std::lower_bound(frameStarts.begin(), frameStarts.end(), start)};
+      std::optional<uint64_t> pts;
+      if (frame != frameStarts.end() && *frame < end)
+        pts = AudioPts(static_cast<int>(frame - frameStarts.begin()));
+      WritePes(AUDIO_PID, 0xC0, pts, {payload.begin() + start, payload.begin() + end}, false);
+    }
+  }
+
   // One video frame per PES without a length, as HLS segments carry video,
   // with a key frame every keyInterval frames
   void WriteVideo(int firstFrame, int count, int keyInterval = 1)
@@ -306,6 +349,16 @@ public:
     const auto half{accessUnit.begin() + accessUnit.size() / 2};
     WritePes(VIDEO_PID, 0xE0, VideoPts(frame), {accessUnit.begin(), half}, false);
     WritePes(VIDEO_PID, 0xE0, std::nullopt, {half, accessUnit.end()}, false);
+  }
+
+  // GStreamer puts the units before the picture, as the parameter sets, in a
+  // PES of their own with the PTS of the frame
+  void WriteVideoFrameInTimestampedPes(int frame, const std::vector<uint8_t>& accessUnit)
+  {
+    const auto picture{accessUnit.begin() + PictureStart(m_codec, accessUnit)};
+    if (picture != accessUnit.begin())
+      WritePes(VIDEO_PID, 0xE0, VideoPts(frame), {accessUnit.begin(), picture}, false);
+    WritePes(VIDEO_PID, 0xE0, VideoPts(frame), {picture, accessUnit.end()}, false);
   }
 
   std::vector<uint8_t> Take() { return std::move(m_data); }
@@ -1252,6 +1305,36 @@ TEST_F(TSSampleReaderTest, AFrameAcrossTwoLiveSegmentsIsReadWhole)
   EXPECT_TRUE(m_reader->EOS());
 }
 
+// A frame can span two PES packets with the PTS of the frame, the parameter
+// sets and the picture. At the end of the stream, the last frame is read whole.
+TEST_F(TSSampleReaderTest, AFrameInTwoTimestampedPesPacketsIsReadWholeAtTheEndOfTheStream)
+{
+  for (const VideoCodec* codec : {&H264, &HEVC, &MPEG2})
+  {
+    SCOPED_TRACE(codec->name);
+    TSWriter writer{*codec};
+    writer.WriteTables(true);
+    for (int frame = 0; frame < SEGMENT_VIDEO_FRAMES; ++frame)
+      writer.WriteVideoFrameInTimestampedPes(frame, frame % 5 ? codec->frame : codec->keyFrame);
+    Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+    std::vector<uint64_t> read;
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample())
+    {
+      SCOPED_TRACE(read.size());
+      read.push_back(m_reader->PTS());
+      EXPECT_GE(m_reader->GetSampleDataSize(),
+                ((read.size() - 1) % 5 ? codec->frame : codec->keyFrame).size() - 1);
+    }
+    std::vector<uint64_t> expected;
+    for (int i = 0; i < SEGMENT_VIDEO_FRAMES; ++i)
+      expected.push_back(Time(VideoPts(i)));
+    EXPECT_EQ(read, expected);
+    EXPECT_TRUE(m_reader->EOS());
+  }
+}
+
 // After the seek scan reads the last frames of a segment, the parser again
 // waits for the start of the next frame, as a frame can span two PES packets.
 TEST_F(TSSampleReaderTest, AFrameInTwoPesPacketsIsReadWholeAfterASeek)
@@ -1689,6 +1772,30 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioThatEnds
   EXPECT_EQ(video, expectedVideo);
   EXPECT_EQ(audioFrames, (std::vector<int>{SPLIT_AUDIO, SPLIT_AUDIO + 1, SPLIT_AUDIO + 2,
                                            SPLIT_AUDIO + 3}));
+}
+
+// A PES of audio can end inside a frame or inside a frame header. The parser
+// finds a frame only after more data, so the next PES headers came before.
+// Each frame still takes the PTS of the PES where the frame starts.
+TEST_F(TSSampleReaderTest, AudioFramesAcrossPesPacketsTakeTheirPts)
+{
+  for (size_t pesSize = 1; pesSize <= 2 * AacFrame(0).size() + 8; ++pesSize)
+  {
+    SCOPED_TRACE(pesSize);
+    TSWriter writer;
+    writer.WriteTables(false);
+    writer.WriteAudioInPesOfSize(SEGMENT_FRAMES, pesSize);
+    Open(writer.Take(), Time(AudioPts(0)) - DIFF, INPUTSTREAM_TYPE_AUDIO);
+    std::vector<std::pair<int, uint64_t>> read;
+    bool started{false};
+    for (AP4_Result result{m_reader->Start(started)}; AP4_SUCCEEDED(result);
+         result = m_reader->ReadSample())
+      read.emplace_back(FrameIndex(), m_reader->PTS());
+    std::vector<std::pair<int, uint64_t>> expected;
+    for (int i = 0; i < SEGMENT_FRAMES; ++i)
+      expected.emplace_back(i, Time(AudioPts(i)));
+    ASSERT_EQ(read, expected);
+  }
 }
 
 // A PES of audio holds several frames. A seek lands on the frame of the seek

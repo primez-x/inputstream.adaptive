@@ -224,9 +224,7 @@ int ES_AC3::FindHeaders(uint8_t *buf, int buf_size)
       m_Channels = AC3ChannelsTable[channelMode] + lfeon;
     }
     es_found_frame = true;
-    m_DTS = c_pts;
-    m_PTS = c_pts;
-    c_pts += 90000 * 1536 / m_SampleRate;
+    m_DTS = m_PTS = AudioFramePts(buf - es_buf, 90000 * 1536 / m_SampleRate);
     return -1;
   }
   return 0;

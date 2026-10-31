@@ -88,7 +88,7 @@ void ES_MPEG2Video::Parse(STREAM_PKT *pkt)
   if (!frameComplete && es_end_of_data && es_found_frame)
   {
     frameComplete = true;
-    EndLastFrame(frame_ptr);
+    EndLastFrame();
   }
 
   if (frameComplete)
@@ -146,6 +146,8 @@ int ES_MPEG2Video::Parse_MPEG2Video(uint32_t startcode, int buf_ptr, bool &compl
   {
     if (m_NeedSPS)
     {
+      if (!es_found_frame)
+        StartPicture(buf_ptr - 4);
       es_found_frame = true;
       return 0;
     }
@@ -163,16 +165,9 @@ int ES_MPEG2Video::Parse_MPEG2Video(uint32_t startcode, int buf_ptr, bool &compl
     if (!es_found_frame)
     {
       m_AuPrevDTS = m_AuDTS;
-      if (buf_ptr - 4 >= (int)es_pts_pointer)
-      {
-        m_AuDTS = c_dts != PTS_UNSET ? c_dts : c_pts;
-        m_AuPTS = c_pts;
-      }
-      else
-      {
-        m_AuDTS = p_dts != PTS_UNSET ? p_dts : p_pts;
-        m_AuPTS = p_pts;
-      }
+      const PesStart* pes = StartPicture(buf_ptr - 4);
+      m_AuPTS = pes ? pes->pts : PTS_UNSET;
+      m_AuDTS = pes && pes->dts != PTS_UNSET ? pes->dts : m_AuPTS;
     }
     if (m_AuPrevDTS == m_AuDTS)
     {

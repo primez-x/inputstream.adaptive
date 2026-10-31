@@ -75,7 +75,7 @@ void ES_hevc::Parse(STREAM_PKT* pkt)
     if (!frameComplete && es_found_frame)
     {
       frameComplete = true;
-      EndLastFrame(frame_ptr);
+      EndLastFrame();
     }
   }
 
@@ -88,11 +88,8 @@ void ES_hevc::Parse(STREAM_PKT* pkt)
       DBG(DEMUX_DBG_DEBUG, "HEVC SPS: PAR %i:%i\n", m_PixelAspect.num, m_PixelAspect.den);
       DBG(DEMUX_DBG_DEBUG, "HEVC SPS: DAR %.2f\n", DAR);
 
-      uint64_t duration;
-      if (c_dts != PTS_UNSET && p_dts != PTS_UNSET && c_dts > p_dts)
-        duration = c_dts - p_dts;
-      else
-        duration = static_cast<int>(Rescale(20000, PTS_TIME_BASE, RESCALE_TIME_BASE));
+      const uint64_t duration = FrameDuration(
+          m_DTS, static_cast<int>(Rescale(20000, PTS_TIME_BASE, RESCALE_TIME_BASE)));
 
       bool streamChange = false;
       if (es_frame_valid)
@@ -157,6 +154,8 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
   {
     if (m_NeedSPS || m_NeedPPS)
     {
+      if (!es_found_frame)
+        StartPicture(buf_ptr - 3);
       es_found_frame = true;
       return;
     }
@@ -178,16 +177,9 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
       m_recoveryPoint = hdr.nal_unit_type >= NAL_BLA_W_LP;
       if (m_recoveryPoint)
         m_NeedIRAP = false;
-      if (buf_ptr - 3 >= (int)es_pts_pointer)
-      {
-        m_DTS = c_dts;
-        m_PTS = c_pts;
-      }
-      else
-      {
-        m_DTS = p_dts;
-        m_PTS = p_pts;
-      }
+      const PesStart* pes = StartPicture(buf_ptr - 3);
+      m_DTS = pes ? pes->dts : PTS_UNSET;
+      m_PTS = pes ? pes->pts : PTS_UNSET;
     }
 
     m_streamData.vcl_nal = vcl;

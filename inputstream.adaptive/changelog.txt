@@ -20,6 +20,8 @@ v21.5.25-p3i.4 (2026-10-31)
 - Fix a seek in a TS stream to a key frame whose PES starts at the end of the segment before with no frame data or only the first bytes of the frame, which continued at the next key frame
 - Fix a live seek to a key frame whose PES starts in the segment before, which lost the first audio frame of an audio PES across the two segments while the seek waited for the next segment
 - Fix a seek in a TS stream to a key frame whose PES starts in the segment before, which dropped the frames after that key frame up to the next key frame
+- Fix the timestamps of TS video and audio frames that the parser read only after the next PES started, which took the PTS of the next frame, as with HEVC access unit delimiters or parameter sets in a PES of their own, or with an audio frame header across two PES
+- Fix the last frame of a TS segment or stream whose parameter sets came in a PES of their own, which was read as two frames
 
 v21.5.25-p3i.3 (2026-10-30)
 - Fix a seek in a live HLS stream that ended the audio when the next audio segment was not available yet
