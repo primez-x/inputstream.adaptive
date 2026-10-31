@@ -60,6 +60,7 @@ AP4_Result CTSSampleReader::Start(bool& bStarted)
     return AP4_ERROR_CANNOT_OPEN_FILE;
   }
 
+  StartClocks();
   m_started = true;
   bStarted = true;
   return ReadSample();

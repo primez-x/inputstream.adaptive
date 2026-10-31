@@ -310,6 +310,14 @@ public:
     }
   }
 
+  // One AAC frame in a PES with or without a PTS
+  void WriteAudioFrame(int frame, bool timestamped)
+  {
+    WritePes(AUDIO_PID, 0xC0,
+             timestamped ? std::optional<uint64_t>{AudioPts(frame)} : std::nullopt,
+             AacFrame(frame), false);
+  }
+
   // Audio frames in PES packets of pesSize bytes, which can end inside a frame
   // or a frame header. A PES has the PTS of the first frame that starts in it.
   void WriteAudioInPesOfSize(int count, size_t pesSize)
@@ -345,6 +353,11 @@ public:
   void WriteVideoFrame(int frame, const std::vector<uint8_t>& accessUnit, size_t firstPacket = 184)
   {
     WritePes(VIDEO_PID, 0xE0, VideoPts(frame), accessUnit, false, firstPacket);
+  }
+
+  void WriteVideoFrameWithoutPts(int frame, const std::vector<uint8_t>& accessUnit)
+  {
+    WritePes(VIDEO_PID, 0xE0, std::nullopt, accessUnit, false);
   }
 
   // A frame can span two PES packets, the second without a PTS
@@ -1962,6 +1975,81 @@ TEST_F(TSSampleReaderTest, AudioFramesAcrossPesPacketsTakeTheirPts)
       expected.emplace_back(i, Time(AudioPts(i)));
     ASSERT_EQ(read, expected);
   }
+}
+
+// An audio PES needs a PTS only every 0.7 s. The frames of a PES without a PTS
+// follow the frames before, also at the start and after a seek. The first
+// audio PES after the seek frame can come after the next video PES.
+TEST_F(TSSampleReaderTest, AudioOfPesWithoutPtsHasThePtsOfItsFrame)
+{
+  constexpr int VIDEO_FRAMES{30};
+  for (const int firstPts : {0, 3})
+  for (const int videoPerGroup : {1, 2})
+  for (const std::optional<int> target : {std::optional<int>{}, std::optional<int>{0},
+                                          std::optional<int>{10}})
+  {
+    SCOPED_TRACE(testing::Message() << "PTS in audio PES " << firstPts << " + 6n, "
+                                    << videoPerGroup << " video frames before the audio, "
+                                    << (target ? "seek to frame " + std::to_string(*target)
+                                               : std::string{"no seek"}));
+    TSWriter writer;
+    writer.WriteTables(true);
+    for (int v = 0; v < VIDEO_FRAMES; v += videoPerGroup)
+    {
+      writer.WriteVideo(v, videoPerGroup, 5);
+      for (int a = 2 * v; a < 2 * (v + videoPerGroup); ++a)
+        writer.WriteAudioFrame(a, a % 6 == firstPts);
+    }
+    Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+    m_reader->AddStreamType(INPUTSTREAM_TYPE_AUDIO, AUDIO_ID);
+    bool started{false};
+    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+    if (target)
+    {
+      m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+      m_segments->m_segmentReadPos = 0;
+      m_reader->Reset(false);
+      ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(*target)), true));
+      ASSERT_EQ(m_reader->GetStreamId(), VIDEO_ID);
+      EXPECT_EQ(m_reader->PTS(), Time(VideoPts(*target)));
+    }
+    std::vector<std::pair<int, uint64_t>> read;
+    do
+    {
+      if (m_reader->GetStreamId() == AUDIO_ID)
+        read.emplace_back(FrameIndex(), m_reader->PTS());
+    } while (read.size() < 8 && AP4_SUCCEEDED(m_reader->ReadSample()));
+    std::vector<std::pair<int, uint64_t>> expected;
+    for (int a = 2 * target.value_or(0); a < 2 * target.value_or(0) + 8; ++a)
+      expected.emplace_back(a, Time(AudioPts(a)));
+    EXPECT_EQ(read, expected);
+  }
+}
+
+// A seek can land on a key frame whose PES has no PTS. The read after the
+// seek returns that frame with the PTS that the seek found, then the next frames.
+TEST_F(TSSampleReaderTest, ASeekToAKeyFrameInAPesWithoutPtsReturnsTheFrame)
+{
+  TSWriter writer;
+  writer.WriteTables(true);
+  writer.WriteVideo(0, 10, 5);
+  writer.WriteVideoFrameWithoutPts(10, H264.keyFrame);
+  writer.WriteVideo(11, 9, 5);
+  Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+  bool started{false};
+  ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+  m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+  m_segments->m_segmentReadPos = 0;
+  m_reader->Reset(false);
+  ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(10)), true));
+  // The key frame has the PTS of the PES before, as in the read without a seek
+  std::vector<uint64_t> pts{m_reader->PTS()};
+  const AP4_Size keyFrameSize{m_reader->GetSampleDataSize()};
+  while (pts.size() < 4 && AP4_SUCCEEDED(m_reader->ReadSample()))
+    pts.push_back(m_reader->PTS());
+  EXPECT_EQ(pts, (std::vector<uint64_t>{Time(VideoPts(9)), Time(VideoPts(11)),
+                                        Time(VideoPts(12)), Time(VideoPts(13))}));
+  EXPECT_GE(keyFrameSize, H264.keyFrame.size());
 }
 
 // A PES of audio holds several frames. A seek lands on the frame of the seek

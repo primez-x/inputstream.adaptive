@@ -73,6 +73,13 @@ void ElementaryStream::Reset(void)
   es_drop_pes = false;
   es_pts_position = UINT64_MAX;
   es_next_pts = PTS_UNSET;
+  // A PES without a PTS takes the timestamps of the PES before
+  if (const std::optional<Clock> clock{std::exchange(es_resume_clock, std::nullopt)})
+  {
+    c_pts = clock->pts;
+    c_dts = clock->dts;
+    es_next_pts = clock->nextPts;
+  }
 }
 
 void ElementaryStream::ClearBuffer()
@@ -115,6 +122,11 @@ void ElementaryStream::ContinueAfterCopy(uint64_t nextFramePosition, bool keyFra
 {
   es_copy_next_position = nextFramePosition;
   es_continue_decode = keyFrame;
+}
+
+void ElementaryStream::ResumeClock(const Clock& clock)
+{
+  es_resume_clock = clock;
 }
 
 const ElementaryStream::PesStart* ElementaryStream::StartPicture(size_t offset)

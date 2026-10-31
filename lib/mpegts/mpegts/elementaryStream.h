@@ -11,6 +11,7 @@
 
 #include <inttypes.h>
 #include <cstddef>    // for size_t
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -106,6 +107,13 @@ namespace TSDemux
     bool GetEndPacket(STREAM_PKT* pkt); ///< Like GetStreamPacket(), but the buffer ends with the end of the last frame
     uint64_t NextFramePosition() const; ///< After GetStreamPacket(), the stream position of the PES where the next frame starts. UINT64_MAX: the next PES with a PTS.
     void ContinueAfterCopy(uint64_t nextFramePosition, bool keyFrame); ///< After the next reset, the data continues after a frame copy that the reader returned
+    struct Clock
+    {
+      int64_t pts;                ///< The PTS of the last PES header before the data
+      int64_t dts;                ///< The DTS of the last PES header before the data
+      int64_t nextPts;            ///< The PTS of the first audio frame of the data
+    };
+    void ResumeClock(const Clock& clock); ///< After the next reset, the data continues with the clock of a read without the reset
     virtual void Parse(STREAM_PKT* pkt);
 
     struct PesStart
@@ -139,6 +147,7 @@ namespace TSDemux
     uint64_t es_copy_next_position; ///< After the next reset, the PES before this position belong to a frame copy. UINT64_MAX: up to the next PES with a PTS.
     uint64_t es_resume_position;  ///< The PES before this position belong to a frame copy
     bool   es_drop_pes;           ///< The PES belongs to a frame copy
+    std::optional<Clock> es_resume_clock; ///< The clock after the next reset
     bool TakeContinueDecode() { return std::exchange(es_continue_decode, false); } ///< Parser: In Reset(), the frames continue a decode
     std::vector<PesStart> es_pes_starts; ///< The PES starts in buffer order, the first PES can start before the buffer
     bool   es_pes_start_pending;

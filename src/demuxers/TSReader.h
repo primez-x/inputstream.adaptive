@@ -11,6 +11,7 @@
 #include "mpegts/tsDemuxer.h"
 
 #include <deque>
+#include <map>
 #include <optional>
 #include <stdint.h>
 #include <utility>
@@ -43,6 +44,11 @@ public:
    *        a frame only when the next frame starts.
    */
   bool ReadEndPacket();
+  /*!
+   * \brief Before the first read, find the clock of each stream. The first
+   *        frames of a stream can come before the first PES with a PTS.
+   */
+  void StartClocks();
 
   /*!
    * \brief The data read from now on is a new segment. The session sets the
@@ -95,6 +101,21 @@ protected:
 
 private:
   bool GetPacket();
+  // A frame and the PES where the frame starts
+  struct ClockFrame
+  {
+    TSDemux::STREAM_PKT pkt;
+    TSDemux::ElementaryStream::PesStart pes;
+  };
+  /*!
+   * \brief Reads on until the clock of each stream at its resume position is
+   *        known, or up to the end of the segment
+   * \param frames The frames read before, more frames are added
+   * \param resume The position where each stream continues
+   */
+  std::map<uint16_t, TSDemux::ElementaryStream::Clock> ReadClocks(
+      std::vector<ClockFrame>& frames, const std::map<uint16_t, uint64_t>& resume);
+  void ResumeClocks(const std::map<uint16_t, TSDemux::ElementaryStream::Clock>& clocks);
   bool HasVideo() const;
   void UpdateSegmentPts(TSDemux::ElementaryStream* stream);
   bool HandleProgramChange();
