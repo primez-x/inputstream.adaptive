@@ -81,6 +81,7 @@ namespace TSDemux
     bool            m_NeedSPS;
     bool            m_NeedPPS;
     bool            m_recoveryPoint;  ///< The frame is an IRAP picture
+    bool            m_NeedIRAP;  ///< After a reset, the frames start with an IRAP picture
     int             m_Width;
     int             m_Height;
     int             m_FpsScale;

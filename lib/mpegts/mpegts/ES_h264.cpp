@@ -57,6 +57,9 @@ ES_h264::ES_h264(uint16_t pes_pid)
   m_fpsRate = 0;
   m_fpsScale = 0;
   m_recoveryPoint = false;
+  m_NeedSPS = true;
+  m_NeedPPS = true;
+  memset(&m_streamData, 0, sizeof(m_streamData));
   Reset();
 }
 
@@ -207,11 +210,14 @@ void ES_h264::Reset()
 {
   ElementaryStream::Reset();
   m_StartCode = 0xffffffff;
+  // The SPS and PPS stay valid for the next frames of the stream, as for the
+  // decoder, which has them in the extra data. So after a seek, an IDR picture
+  // can use the parameter sets of an earlier picture.
+  m_SPSRawId = -1;
+  m_PPSRawId = -1;
   m_NeedIFrame = true;
-  m_NeedSPS = true;
-  m_NeedPPS = true;
   m_recoveryPoint = false;
-  memset(&m_streamData, 0, sizeof(m_streamData));
+  memset(&m_streamData.vcl_nal, 0, sizeof(m_streamData.vcl_nal));
 }
 
 int ES_h264::Parse_H264(uint32_t startcode, int buf_ptr, bool &complete)

@@ -143,6 +143,36 @@ const VideoCodec MPEG2{
      0x00, 0x00, 0x01, 0x00, 0x00, 0x57, 0xff, 0xfb, 0x80, 0x00, 0x00, 0x01, 0xb5,
      0x81, 0x1f, 0xf3, 0x41, 0x80, 0x00, 0x00, 0x01, 0x01, 0x12, 0x70}};
 
+// A key frame that uses the parameter sets of an earlier key frame: the access
+// unit without the VPS, SPS and PPS, or without the MPEG-2 sequence header and
+// sequence extension
+std::vector<uint8_t> WithoutParameterSets(const VideoCodec& codec)
+{
+  const std::vector<uint8_t>& au{codec.keyFrame};
+  std::vector<size_t> starts; // The start code of each unit
+  for (size_t i = 0; i + 3 < au.size(); ++i)
+  {
+    if (au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 1)
+      starts.push_back(i > 0 && au[i - 1] == 0 ? i - 1 : i);
+  }
+  starts.push_back(au.size());
+  std::vector<uint8_t> result;
+  for (size_t n = 0; n + 1 < starts.size(); ++n)
+  {
+    const uint8_t* unit{au.data() + starts[n] + (au[starts[n] + 2] == 1 ? 3 : 4)};
+    bool parameterSet;
+    if (codec.streamType == H264.streamType)
+      parameterSet = (unit[0] & 0x1F) == 7 || (unit[0] & 0x1F) == 8;
+    else if (codec.streamType == HEVC.streamType)
+      parameterSet = ((unit[0] >> 1) & 0x3F) >= 32 && ((unit[0] >> 1) & 0x3F) <= 34;
+    else
+      parameterSet = unit[0] == 0xB3 || (unit[0] == 0xB5 && unit[1] >> 4 == 1);
+    if (!parameterSet)
+      result.insert(result.end(), au.begin() + starts[n], au.begin() + starts[n + 1]);
+  }
+  return result;
+}
+
 // Writes TS packets with continuity counters that continue across segments
 class TSWriter
 {
@@ -565,6 +595,115 @@ TEST_F(TSSampleReaderTest, VideoSeekLandsOnTheKeyFrame)
       ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
       EXPECT_EQ(m_reader->PTS(), Time(VideoPts(key + 1)));
     }
+  }
+}
+
+// The parsers keep the parameter sets after a reset, but a decode starts only
+// at a key frame. So the read after a reset in a segment starts at the next
+// key frame.
+TEST_F(TSSampleReaderTest, TheReadAfterAResetStartsAtAKeyFrame)
+{
+  for (const VideoCodec* codec : {&H264, &HEVC, &MPEG2})
+  {
+    SCOPED_TRACE(codec->name);
+    TSWriter writer{*codec};
+    writer.WriteTables(true);
+    writer.WriteVideo(0, SEGMENT_VIDEO_FRAMES, 5);
+    Open(writer.Take(), Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+    bool started{false};
+    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+    for (int frame = 1; frame <= 2; ++frame)
+      ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+    m_reader->Reset(false);
+    ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+    EXPECT_EQ(m_reader->PTS(), Time(VideoPts(5)));
+  }
+}
+
+// An IDR or IRAP picture can use the parameter sets of an earlier picture,
+// which the decoder keeps after a seek. A seek lands on such a key frame, also
+// when the seek starts in a later segment without parameter sets.
+TEST_F(TSSampleReaderTest, VideoSeekLandsOnAKeyFrameWithoutParameterSets)
+{
+  constexpr int KEY_INTERVAL{5};
+  for (const VideoCodec* codec : {&H264, &HEVC})
+  {
+    SCOPED_TRACE(codec->name);
+    const std::vector<uint8_t> key{WithoutParameterSets(*codec)};
+    ASSERT_LT(key.size(), codec->keyFrame.size());
+    TSWriter writer{*codec};
+    std::vector<uint8_t> segments[2];
+    for (int s = 0; s < 2; ++s)
+    {
+      writer.WriteTables(true);
+      for (int frame = s * SEGMENT_VIDEO_FRAMES; frame < (s + 1) * SEGMENT_VIDEO_FRAMES; ++frame)
+      {
+        writer.WriteVideoFrame(frame, frame == 0                ? codec->keyFrame
+                                      : frame % KEY_INTERVAL ? codec->frame
+                                                             : key);
+      }
+      segments[s] = writer.Take();
+    }
+    for (int segment = 0; segment < 2; ++segment)
+    for (const bool preceeding : {true, false})
+    for (int target = segment * SEGMENT_VIDEO_FRAMES;
+         target < 2 * SEGMENT_VIDEO_FRAMES - (preceeding ? 0 : KEY_INTERVAL); ++target)
+    {
+      SCOPED_TRACE(testing::Message() << "segment " << segment << ", target frame " << target
+                                      << (preceeding ? "" : ", not preceeding"));
+      Open(segments[0], Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+      AppendSegment(segments[1], Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
+      bool started{false};
+      ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+      while (m_reader->PTS() < Time(VideoPts(segment * SEGMENT_VIDEO_FRAMES + 2)))
+        ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+      // AdaptiveStream::seek_time() restarts the segment of the seek time, and
+      // the session resets the reader
+      m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+      m_segments->m_segmentReadPos = 0;
+      m_reader->Reset(false);
+      const int landing{preceeding ? target - target % KEY_INTERVAL
+                                   : (target + KEY_INTERVAL - 1) / KEY_INTERVAL * KEY_INTERVAL};
+      ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(target)), preceeding));
+      EXPECT_EQ(m_reader->PTS(), Time(VideoPts(landing)));
+      ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+      EXPECT_EQ(m_reader->PTS(), Time(VideoPts(landing + 1)));
+    }
+  }
+}
+
+// MPEG-2 has no parameter sets outside the stream, so a decoder can start only
+// at a sequence header. A seek lands on an I picture after a sequence header,
+// not on an I picture without a sequence header.
+TEST_F(TSSampleReaderTest, MPEG2SeekLandsOnAnIPictureAfterASequenceHeader)
+{
+  const std::vector<uint8_t> iPicture{WithoutParameterSets(MPEG2)};
+  ASSERT_LT(iPicture.size(), MPEG2.keyFrame.size());
+  TSWriter writer{MPEG2};
+  writer.WriteTables(true);
+  for (int frame = 0; frame < SEGMENT_VIDEO_FRAMES; ++frame)
+  {
+    writer.WriteVideoFrame(frame, frame % 10 == 0  ? MPEG2.keyFrame
+                                  : frame % 5 == 0 ? iPicture
+                                                   : MPEG2.frame);
+  }
+  const std::vector<uint8_t> segment{writer.Take()};
+  for (const bool preceeding : {true, false})
+  for (int target = 0; target < (preceeding ? SEGMENT_VIDEO_FRAMES : 10); ++target)
+  {
+    SCOPED_TRACE(testing::Message() << "target frame " << target
+                                    << (preceeding ? "" : ", not preceeding"));
+    Open(segment, Time(VideoPts(0)) - DIFF, INPUTSTREAM_TYPE_VIDEO);
+    bool started{false};
+    ASSERT_EQ(m_reader->Start(started), AP4_SUCCESS);
+    m_segments->m_absolutePosition -= m_segments->m_segmentReadPos;
+    m_segments->m_segmentReadPos = 0;
+    m_reader->Reset(false);
+    const int landing{preceeding ? target - target % 10 : (target + 9) / 10 * 10};
+    ASSERT_TRUE(m_reader->TimeSeek(Time(VideoPts(target)), preceeding));
+    EXPECT_EQ(m_reader->PTS(), Time(VideoPts(landing)));
+    ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
+    EXPECT_EQ(m_reader->PTS(), Time(VideoPts(landing + 1)));
   }
 }
 

@@ -122,6 +122,7 @@ void ES_MPEG2Video::Parse(STREAM_PKT *pkt)
     es_found_frame = false;
     es_frame_valid = true;
     m_recoveryPoint = false;
+    m_sequenceHeader = false;
   }
 }
 
@@ -132,6 +133,7 @@ void ES_MPEG2Video::Reset()
   m_NeedIFrame = true;
   m_NeedSPS = true;
   m_recoveryPoint = false;
+  m_sequenceHeader = false;
 }
 
 int ES_MPEG2Video::Parse_MPEG2Video(uint32_t startcode, int buf_ptr, bool &complete)
@@ -204,6 +206,7 @@ int ES_MPEG2Video::Parse_MPEG2Video(uint32_t startcode, int buf_ptr, bool &compl
     if (!Parse_MPEG2Video_SeqStart(buf))
       return 0;
 
+    m_sequenceHeader = true;
     break;
   }
 
@@ -274,7 +277,9 @@ bool ES_MPEG2Video::Parse_MPEG2Video_PicStart(uint8_t *buf)
   if (pct < PKT_I_FRAME || pct > PKT_B_FRAME)
     return true; /* Illegal picture_coding_type */
 
-  m_recoveryPoint = pct == PKT_I_FRAME;
+  // MPEG-2 has no parameter sets outside the stream, so a decode starts only
+  // at an I picture after a sequence header
+  m_recoveryPoint = pct == PKT_I_FRAME && m_sequenceHeader;
   if (pct == PKT_I_FRAME)
     m_NeedIFrame = false;
 

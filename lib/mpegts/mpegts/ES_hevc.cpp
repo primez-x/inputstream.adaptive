@@ -26,6 +26,10 @@ ES_hevc::ES_hevc(uint16_t pes_pid)
   m_PTS               = PTS_UNSET;
   m_Interlaced        = false;
   es_alloc_init       = 240000;
+  m_NeedVPS = true;
+  m_NeedSPS = true;
+  m_NeedPPS = true;
+  memset(&m_streamData, 0, sizeof(m_streamData));
   Reset();
 }
 
@@ -80,7 +84,7 @@ void ES_hevc::Parse(STREAM_PKT* pkt)
 
   if (frameComplete)
   {
-    if (!m_NeedSPS)
+    if (!m_NeedSPS && !m_NeedIRAP)
     {
       double PAR = (double)m_PixelAspect.num/(double)m_PixelAspect.den;
       double DAR = (PAR * m_Width) / m_Height;
@@ -124,11 +128,12 @@ void ES_hevc::Reset()
   ElementaryStream::Reset();
   m_StartCode = 0xffffffff;
   m_LastStartPos = -1;
-  m_NeedVPS = true;
-  m_NeedSPS = true;
-  m_NeedPPS = true;
+  // The VPS, SPS and PPS stay valid for the next frames of the stream, as for
+  // the decoder, which has them in the extra data. So after a seek, an IRAP
+  // picture can use the parameter sets of an earlier picture.
+  m_NeedIRAP = true;
   m_recoveryPoint = false;
-  memset(&m_streamData, 0, sizeof(m_streamData));
+  memset(&m_streamData.vcl_nal, 0, sizeof(m_streamData.vcl_nal));
 }
 
 
@@ -169,6 +174,8 @@ void ES_hevc::Parse_HEVC(int buf_ptr, unsigned int NumBytesInNalUnit, bool &comp
     {
       // A BLA, IDR or CRA picture starts a decode
       m_recoveryPoint = hdr.nal_unit_type >= NAL_BLA_W_LP;
+      if (m_recoveryPoint)
+        m_NeedIRAP = false;
       if (buf_ptr - 3 >= (int)es_pts_pointer)
       {
         m_DTS = c_dts;
