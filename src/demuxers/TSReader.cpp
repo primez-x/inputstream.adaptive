@@ -286,6 +286,15 @@ bool TSReader::SeekTime(uint64_t timeInTs, bool preceeding)
       seekFrame = startFrame;
       seekFrameIsCopy = false;
       copies.clear();
+      // A stream without frames since then, as when a live seek waits again,
+      // keeps the frames of its last PES
+      for (FrameCopy& frame : previousPesFrames)
+      {
+        const uint16_t pid{frame.pkt.pid};
+        if (std::none_of(lastPesFrames.begin(), lastPesFrames.end(),
+                         [pid](const FrameCopy& last) { return last.pkt.pid == pid; }))
+          lastPesFrames.push_back(std::move(frame));
+      }
       previousPesFrames = std::move(lastPesFrames);
       lastPesFrames.clear();
       continue;

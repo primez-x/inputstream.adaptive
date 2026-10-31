@@ -1739,14 +1739,18 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTh
   constexpr int SPLIT_FRAMES{4};
   // The audio of the next segment comes before or after the video of a frame.
   // With the video first, the rest of the audio PES comes after the next video PES.
-  // A live seek waits for the next segment.
+  // A live seek waits for the next segment, also over more reads.
   for (const bool live : {false, true})
+  for (const int waitReads : {0, 2})
   for (const bool audioFirst : {true, false})
   for (const bool preceeding : {true, false})
   {
+    if (!live && waitReads)
+      continue;
     SCOPED_TRACE(testing::Message() << (audioFirst ? "audio first" : "video first")
                                     << (preceeding ? "" : ", not preceeding")
-                                    << (live ? ", live" : ""));
+                                    << (live ? ", live" : "") << ", " << waitReads
+                                    << " wait reads");
     TSWriter writer;
     writer.WriteTables(true);
     for (int v = 0; v < SPLIT_FRAME; ++v)
@@ -1803,6 +1807,11 @@ TEST_F(TSSampleReaderTest, SeekToAKeyFrameAcrossTwoSegmentsKeepsTheAudioAcrossTh
     if (live)
     {
       EXPECT_FALSE(m_reader->EOS());
+      for (int read = 0; read < waitReads; ++read)
+      {
+        EXPECT_EQ(m_reader->ReadSample(), AP4_ERROR_EOS);
+        EXPECT_FALSE(m_reader->EOS());
+      }
       AppendSegment(second, Time(VideoPts(SEGMENT_VIDEO_FRAMES)) - SegmentDiff(1));
       m_segments->m_waitingForSegment = false;
       ASSERT_EQ(m_reader->ReadSample(), AP4_SUCCESS);
