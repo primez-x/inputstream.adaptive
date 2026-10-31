@@ -39,6 +39,8 @@ public:
   bool IsEncrypted() const override { return false; }
 
 private:
+  void UpdatePts();
+
   bool m_eos{false};
   bool m_started{false};
   AP4_UI32 m_streamId;

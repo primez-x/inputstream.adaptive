@@ -44,7 +44,7 @@ private:
   uint8_t m_majorVer;
   uint8_t m_revisionVer;
   uint8_t m_flags;
-  uint64_t m_timestamp;
+  uint64_t m_timestamp{0};
 };
 
 

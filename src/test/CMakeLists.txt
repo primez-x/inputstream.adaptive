@@ -6,12 +6,16 @@ add_definitions(-DINPUTSTREAM_TEST_BUILD)
 
 add_executable(${BINARY}
     TestMain.cpp
+    TestADTSReader.cpp
     TestDASHTree.cpp
     TestHLSTree.cpp
     TestSmoothTree.cpp
     TestHelper.cpp
     TestUtils.cpp
     ../decrypters/Helpers.cpp
+    ../demuxers/ADTSReader.cpp
+    ../samplereader/ADTSSampleReader.cpp
+    ../parser/CodecParser.cpp
     ../parser/DASHTree.cpp
     ../parser/HLSTree.cpp
     ../parser/SmoothTree.cpp
@@ -36,6 +40,7 @@ add_executable(${BINARY}
     ../common/SegmentBase.cpp
     ../common/SegmentList.cpp
     ../common/SegTemplate.cpp
+    ../AdaptiveByteStream.cpp
     ../oscompat.cpp
     ../SrvBroker.cpp
     ../CompSettings.cpp
@@ -55,3 +60,7 @@ target_link_libraries(${BINARY} PRIVATE ${BENTO4_LIBRARIES} ${PUGIXML_LIBRARIES}
 
 set(TEST_DATA_DIR "${CMAKE_SOURCE_DIR}/src/test/manifests")
 add_test(NAME manifest_tests COMMAND ${BINARY} "${TEST_DATA_DIR}")
+
+# ADTSReader.h includes the Kodi headers, which conflict with the test stubs
+set_source_files_properties(TestADTSReader.cpp ../samplereader/ADTSSampleReader.cpp
+                            PROPERTIES COMPILE_OPTIONS "-UINPUTSTREAM_TEST_BUILD")
