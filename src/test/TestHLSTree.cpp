@@ -457,7 +457,7 @@ TEST_F(HLSTreeTest, LastSegmentOfEachPeriod)
     for (const bool dateTime : {false, true})
     {
       SCOPED_TRACE(testing::Message() << "live=" << live << " program date time=" << dateTime);
-      CSrvBroker::GetInstance()->Init(m_kodiProps);
+      CSrvBroker::GetInstance()->Init({});
       ChildManifestTree hls;
       hls.Configure(m_reprChooser, {}, "");
       ASSERT_TRUE(hls.Open("http://foo.bar/master.m3u8", {},
@@ -511,7 +511,7 @@ TEST_F(HLSTreeTest, SeekSegmentOfAForwardVideoSeek)
   for (const bool ts : {true, false})
   {
     SCOPED_TRACE(testing::Message() << "TS=" << ts);
-    CSrvBroker::GetInstance()->Init(m_kodiProps);
+    CSrvBroker::GetInstance()->Init({});
     ChildManifestTree hls;
     hls.Configure(m_reprChooser, {}, "");
     ASSERT_TRUE(hls.Open("http://foo.bar/master.m3u8", {},
@@ -573,7 +573,7 @@ TEST_F(HLSTreeTest, SeekSegmentAtASegmentStart)
   for (const bool ts : {true, false})
   {
     SCOPED_TRACE(testing::Message() << "TS=" << ts);
-    CSrvBroker::GetInstance()->Init(m_kodiProps);
+    CSrvBroker::GetInstance()->Init({});
     ChildManifestTree hls;
     hls.Configure(m_reprChooser, {}, "");
     ASSERT_TRUE(hls.Open("http://foo.bar/master.m3u8", {},
